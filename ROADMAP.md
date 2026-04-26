@@ -31,9 +31,9 @@ Priorities are subjective — anything here is fair game, in any order.
 |---|---|---|
 | S1 | Pause (Space) and reverse-time keys (`,` / `.`) | ✅ Done. `Space` toggles pause; `,` plays backward, `.` plays forward (magnitude preserved); `+`/`-` work in both directions. |
 | S2 | Planet trails | ✅ Done. Per-planet 200-sample ring buffer rendered as a fading `LineStrip` (alpha quadratic in age). Toggle with `T`; auto-clears on direction reverse and scale toggle. |
-| S3 | Asteroid belt | ~10 k instanced billboards or tiny spheres between Mars and Jupiter, randomised semi-major axes / eccentricities / inclinations within real ranges. |
-| S4 | Comet with ion / dust tail | High-eccentricity Kepler orbit; particle tail always pointing away from the Sun. |
-| S5 | Date seek | `T` key opens text input; jump to a specific calendar date or `±N` days. |
+| S3 | Asteroid belt | ✅ Done. `AsteroidBelt` precomputes per-asteroid Keplerian elements + perifocal→world basis (ecliptic→GL swap folded in) for 8000 rocks; per frame each is advanced by Newton-Raphson Kepler solve and rendered as additively-blended `GL_POINTS` with logarithmic depth. |
+| S4 | Comet with ion / dust tail | ✅ Done. `Comet` runs a 1P/Halley-like ellipse (a≈17.83 AU, e≈0.967, i=162°) through the existing `OrbitalMechanics.HeliocentricPosition`, draws its own orbit polyline, and emits a CPU particle tail in a cone around the anti-Sun axis with intensity scaled by 1/r so the tail only “blazes” near perihelion. |
+| S5 | Date seek | ✅ Done. `J` opens a top-of-screen prompt; type `YYYY-MM-DD` (any culture-invariant `DateTime.TryParse` format) or a signed delta like `+30` / `-365` and press Enter. `Esc` cancels. After a jump trails are cleared so they don’t draw a stale arc across the new epoch. |
 | S6 | Major moons | Jovian (Io, Europa, Ganymede, Callisto), Saturnian (Titan), reusing the Moon pattern. |
 | S7 | Dwarf planets | Pluto, Ceres, Eris, Makemake, Haumea — same Kepler + texture pipeline. |
 | S8 | Constellation overlay | Optional toggle that draws constellation lines and names from a JSON data file. |

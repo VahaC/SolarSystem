@@ -654,6 +654,11 @@ public sealed class Renderer : IDisposable
         GL.BindVertexArray(0);
     }
 
+    /// <summary>Draws the comet's pre-built orbit polyline using the shared orbit
+    /// shader. Kept as a forwarding helper so the comet doesn't need to own its own
+    /// shader program just to render a single line loop.</summary>
+    public void DrawCometOrbit(Camera cam, Comet comet) => comet.DrawOrbit(cam, _orbitShader);
+
     public void DrawSaturnRing(Camera cam, Planet saturn)
     {
         _ringShader.Use();

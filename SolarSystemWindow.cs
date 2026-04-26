@@ -29,9 +29,22 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly Camera _camera = new();
     private readonly SolarWind _solarWind = new();
     private readonly SolarFlares _solarFlares = new();
+    private readonly AsteroidBelt _belt = new();
+    private readonly Comet _comet = new();
     private BitmapFont _font = null!;
     private Planet[] _planets = null!;
     private Planet _moon = null!;
+
+    // Date-seek (S5): when active, keystrokes are routed into the prompt buffer
+    // instead of the normal sim controls. Submit with Enter, cancel with Escape.
+    private bool _seekActive;
+    private string _seekBuffer = "";
+    private string _seekFeedback = "";
+    private double _seekFeedbackUntil;
+    /// <summary>The OS fires OnTextInput right after OnKeyDown for the same physical
+    /// keystroke that opened the prompt. We swallow exactly one text-input event so the
+    /// triggering 'J' (or 'j') doesn't end up as the first character of the buffer.</summary>
+    private bool _seekSwallowNextChar;
     /// <summary>Snapshot of each planet's inflated VisualRadius captured at load.
     /// In real-scale mode VisualRadius is replaced with the real km-derived value;
     /// switching back restores these originals.</summary>
@@ -72,6 +85,8 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.Initialize();
         _solarWind.Initialize();
         _solarFlares.Initialize();
+        _belt.Initialize();
+        _comet.Initialize();
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
@@ -212,6 +227,17 @@ public sealed class SolarSystemWindow : GameWindow
         _solarWind.Update(fxDt, Vector3.Zero, SunRadius);
         _solarFlares.Update(fxDt, Vector3.Zero, SunRadius);
 
+        // Asteroid belt + comet position track sim time even when paused (positions are
+        // a pure function of _simDays, not an integration), so they stay correctly
+        // placed after a date jump or while the simulation is frozen.
+        _belt.Update(_simDays);
+        _comet.UpdatePosition(_simDays);
+        _comet.UpdateTail(fxDt, Vector3.Zero);
+
+        // Clear stale seek-feedback message after a few seconds.
+        if (_seekFeedback.Length > 0 && GLFW.GetTime() > _seekFeedbackUntil)
+            _seekFeedback = "";
+
         // Title with current sim date
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
         string speedStr = _paused
@@ -226,12 +252,41 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnKeyDown(KeyboardKeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.IsRepeat) return;
+        if (e.IsRepeat && !_seekActive) return;
+
+        // Date-seek prompt swallows all keys except its own control set so the user
+        // can type a date without triggering pause / focus / scale toggles.
+        if (_seekActive)
+        {
+            switch (e.Key)
+            {
+                case Keys.Escape:
+                    _seekActive = false;
+                    _seekBuffer = "";
+                    break;
+                case Keys.Enter:
+                case Keys.KeyPadEnter:
+                    ApplyDateSeek();
+                    break;
+                case Keys.Backspace:
+                    if (_seekBuffer.Length > 0)
+                        _seekBuffer = _seekBuffer[..^1];
+                    break;
+            }
+            return;
+        }
 
         switch (e.Key)
         {
             case Keys.Escape:
                 Close();
+                break;
+
+            case Keys.J:
+                _seekActive = true;
+                _seekBuffer = "";
+                _seekFeedback = "";
+                _seekSwallowNextChar = true;
                 break;
 
             case Keys.Space: _paused = !_paused; break;
@@ -296,17 +351,24 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.BeginScene();
 
         _renderer.DrawStars(_camera);
-        if (_showOrbits) _renderer.DrawOrbits(_camera, _planets);
+        if (_showOrbits)
+        {
+            _renderer.DrawOrbits(_camera, _planets);
+            _renderer.DrawCometOrbit(_camera, _comet);
+        }
         if (_showTrails) _renderer.DrawTrails(_camera, _planets);
 
         _renderer.DrawSun(_camera, Vector3.Zero, SunRadius);
         foreach (var p in _planets)
             _renderer.DrawPlanet(_camera, p, Vector3.Zero);
         _renderer.DrawPlanet(_camera, _moon, Vector3.Zero);
+        _renderer.DrawPlanet(_camera, _comet.Body, Vector3.Zero);
 
         var saturn = _planets[5];
         _renderer.DrawSaturnRing(_camera, saturn);
 
+        _belt.Draw(_camera);
+        _comet.DrawTail(_camera);
         _solarWind.Draw(_camera);
         _solarFlares.Draw(_camera);
 
@@ -329,6 +391,9 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawLabel(_font, _camera,
                 _moon.Position + new Vector3(0, _moon.VisualRadius + 0.5f, 0),
                 _moon.Name, 12, new Vector4(0.85f, 0.85f, 0.85f, 0.9f));
+            _renderer.DrawLabel(_font, _camera,
+                _comet.Body.Position + new Vector3(0, _comet.Body.VisualRadius + 0.5f, 0),
+                _comet.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
         }
 
         // UI overlay
@@ -359,6 +424,7 @@ public sealed class SolarSystemWindow : GameWindow
             "L           toggle labels\n" +
             "T           toggle trails\n" +
             "A           toggle axes\n" +
+            "J           jump to date / ±days\n" +
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
             "R           real / compressed scale\n" +
@@ -397,6 +463,22 @@ public sealed class SolarSystemWindow : GameWindow
         float lineH = infoSize * (_font.LineHeight / _font.FontPixelSize);
         float panelY = _renderer.FramebufferSize.Y - 12f - lineCount * lineH;
         _renderer.DrawText(_font, info, 12, panelY, infoSize, white);
+
+        // Date-seek prompt: top-center modal overlay while active. Drawn after every
+        // other UI so it can't be occluded.
+        if (_seekActive)
+        {
+            string prompt = $"Jump to date (YYYY-MM-DD) or +/-N days:\n> {_seekBuffer}_";
+            _renderer.DrawText(_font, prompt,
+                _renderer.FramebufferSize.X * 0.5f - 200f, 20f, 16f,
+                new Vector4(1f, 1f, 0.7f, 1f));
+        }
+        else if (_seekFeedback.Length > 0)
+        {
+            _renderer.DrawText(_font, _seekFeedback,
+                _renderer.FramebufferSize.X * 0.5f - 160f, 20f, 14f,
+                new Vector4(1f, 0.9f, 0.5f, 0.9f));
+        }
 
         SwapBuffers();
     }
@@ -568,6 +650,7 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Orbit lines were uploaded once with the old scale — rebuild them.
         _renderer.BuildOrbits(_planets);
+        _comet.RebuildOrbit();
 
         // Trails accumulated in the old world scale would suddenly jump on toggle.
         ClearAllTrails();
@@ -597,10 +680,63 @@ public sealed class SolarSystemWindow : GameWindow
         foreach (var p in _planets) p.TrailReset();
     }
 
+    protected override void OnTextInput(TextInputEventArgs e)
+    {
+        base.OnTextInput(e);
+        if (!_seekActive) return;
+        if (_seekSwallowNextChar) { _seekSwallowNextChar = false; return; }
+        // Cap to avoid pathological pastes; only printable characters land here.
+        if (_seekBuffer.Length < 32)
+            _seekBuffer += e.AsString;
+    }
+
+    /// <summary>Parse the date-seek buffer and update <see cref="_simDays"/>.
+    /// Accepts an absolute date (any format <see cref="DateTime.TryParse(string, out DateTime)"/>
+    /// understands) or a signed integer day delta (e.g. "+30", "-365").</summary>
+    private void ApplyDateSeek()
+    {
+        string s = _seekBuffer.Trim();
+        bool ok = false;
+        if (s.Length > 0)
+        {
+            if ((s[0] == '+' || s[0] == '-') && double.TryParse(
+                    s, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double delta))
+            {
+                _simDays += delta;
+                ok = true;
+            }
+            else if (DateTime.TryParse(s,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out DateTime dt))
+            {
+                _simDays = (dt - OrbitalMechanics.J2000).TotalDays;
+                ok = true;
+            }
+        }
+
+        if (ok)
+        {
+            ClearAllTrails();
+            var newDate = OrbitalMechanics.J2000.AddDays(_simDays);
+            _seekFeedback = $"Jumped to {newDate:yyyy-MM-dd}";
+        }
+        else
+        {
+            _seekFeedback = $"Could not parse '{s}'";
+        }
+        _seekFeedbackUntil = GLFW.GetTime() + 3.0;
+        _seekActive = false;
+        _seekBuffer = "";
+    }
+
     protected override void OnUnload()
     {
         _solarWind.Dispose();
         _solarFlares.Dispose();
+        _belt.Dispose();
+        _comet.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
