@@ -13,6 +13,7 @@ public sealed class SolarSystemWindow : GameWindow
 
     private readonly Renderer _renderer = new();
     private readonly Camera _camera = new();
+    private readonly SolarWind _solarWind = new();
     private BitmapFont _font = null!;
     private Planet[] _planets = null!;
 
@@ -37,6 +38,7 @@ public sealed class SolarSystemWindow : GameWindow
         base.OnLoad();
         _renderer.FramebufferSize = new Vector2i(ClientSize.X, ClientSize.Y);
         _renderer.Initialize();
+        _solarWind.Initialize();
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
@@ -89,9 +91,11 @@ public sealed class SolarSystemWindow : GameWindow
         if (_focusIndex >= 0)
             _camera.Target = _planets[_focusIndex].Position;
 
+        _solarWind.Update((float)args.Time, Vector3.Zero, SunRadius);
+
         // Title with current sim date
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -111,6 +115,7 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.O: _showOrbits = !_showOrbits; break;
             case Keys.A: _showAxes = !_showAxes; break;
             case Keys.L: _showLabels = !_showLabels; break;
+            case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
 
             case Keys.KeyPadAdd:
             case Keys.Equal:
@@ -156,6 +161,8 @@ public sealed class SolarSystemWindow : GameWindow
         var saturn = _planets[5];
         _renderer.DrawSaturnRing(_camera, saturn);
 
+        _solarWind.Draw(_camera);
+
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, _planets);
 
         // Labels
@@ -191,6 +198,7 @@ public sealed class SolarSystemWindow : GameWindow
             "O           toggle orbits\n" +
             "L           toggle labels\n" +
             "A           toggle axes\n" +
+            "W           toggle solar wind\n" +
             "Esc         quit";
         _renderer.DrawText(_font, help, 12, 78, 13, dim);
 
@@ -364,6 +372,7 @@ public sealed class SolarSystemWindow : GameWindow
 
     protected override void OnUnload()
     {
+        _solarWind.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
