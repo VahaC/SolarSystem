@@ -175,6 +175,7 @@ public sealed class SolarFlares : IDisposable
         _shader.Use();
         _shader.SetMatrix4("uView", cam.ViewMatrix);
         _shader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _shader.SetFloat("uFcoef", 2.0f / MathF.Log2(cam.Far + 1.0f));
 
         GL.Enable(EnableCap.Blend);
         GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One); // additive
@@ -198,10 +199,12 @@ public sealed class SolarFlares : IDisposable
 layout(location=0) in vec3 aPos;
 layout(location=1) in float aLife01;
 uniform mat4 uView; uniform mat4 uProj;
+uniform float uFcoef;
 out float vLife;
 void main() {
     vec4 vp = uView * vec4(aPos, 1.0);
     gl_Position = uProj * vp;
+    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
     float dist = max(1.0, -vp.z);
     // Larger than solar wind, and bigger near birth (life01 close to 1).
     gl_PointSize = clamp(420.0 / dist, 2.0, 14.0) * mix(0.5, 1.6, aLife01);

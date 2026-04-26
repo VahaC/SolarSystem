@@ -49,6 +49,14 @@ public sealed class Renderer : IDisposable
 
     public Vector2i FramebufferSize { get; set; } = new(1280, 800);
 
+    /// <summary>Minimum on-screen radius (in pixels) the Sun and planets are forced to.
+    /// Keeps real-scale bodies visible at any distance. Set to 0 to disable.</summary>
+    public float MinPixelRadius { get; set; } = 1.0f;
+
+    // Logarithmic-depth coefficient: Fcoef = 2 / log2(far + 1). Computed per draw
+    // from the active camera's far plane and uploaded as `uFcoef` to every 3D shader.
+    private static float Fcoef(Camera cam) => 2.0f / MathF.Log2(cam.Far + 1.0f);
+
     public void Initialize()
     {
         BuildSphere(64, 64);
@@ -276,6 +284,7 @@ public sealed class Renderer : IDisposable
         _orbitShader.Use();
         _orbitShader.SetMatrix4("uView", cam.ViewMatrix);
         _orbitShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _orbitShader.SetFloat("uFcoef", Fcoef(cam));
         _orbitShader.SetVector4("uColor", new Vector4(1f, 0.2f, 0.2f, 0.9f));
         GL.BindVertexArray(_axisVao);
         foreach (var p in planets)
@@ -372,6 +381,7 @@ public sealed class Renderer : IDisposable
         _trailShader.Use();
         _trailShader.SetMatrix4("uView", cam.ViewMatrix);
         _trailShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _trailShader.SetFloat("uFcoef", Fcoef(cam));
         _trailShader.SetVector4("uColor", new Vector4(0.85f, 0.9f, 1.0f, 0.9f));
 
         GL.Enable(EnableCap.Blend);
@@ -561,6 +571,7 @@ public sealed class Renderer : IDisposable
         _orbitShader.SetMatrix4("uView", cam.ViewMatrix);
         _orbitShader.SetMatrix4("uProj", cam.ProjectionMatrix);
         _orbitShader.SetMatrix4("uModel", Matrix4.Identity);
+        _orbitShader.SetFloat("uFcoef", Fcoef(cam));
         _orbitShader.SetVector4("uColor", new Vector4(0.4f, 0.4f, 0.55f, 0.6f));
         GL.Enable(EnableCap.Blend);
         GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
@@ -579,6 +590,11 @@ public sealed class Renderer : IDisposable
         _sunShader.SetMatrix4("uProj", cam.ProjectionMatrix);
         var model = Matrix4.CreateScale(radius) * Matrix4.CreateTranslation(sunPos);
         _sunShader.SetMatrix4("uModel", model);
+        _sunShader.SetFloat("uFcoef", Fcoef(cam));
+        _sunShader.SetVector3("uPlanetCenter", sunPos);
+        _sunShader.SetFloat("uPlanetRadius", radius);
+        _sunShader.SetVector2("uViewportSize", new Vector2(FramebufferSize.X, FramebufferSize.Y));
+        _sunShader.SetFloat("uMinPixelRadius", MinPixelRadius);
         _sunShader.SetVector3("uColor", new Vector3(1.0f, 0.85f, 0.45f));
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindTexture(TextureTarget.Texture2D, _sunTexture);
@@ -591,6 +607,7 @@ public sealed class Renderer : IDisposable
         _glowShader.Use();
         _glowShader.SetMatrix4("uView", cam.ViewMatrix);
         _glowShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _glowShader.SetFloat("uFcoef", Fcoef(cam));
         _glowShader.SetVector3("uCenter", sunPos);
         _glowShader.SetFloat("uSize", radius * 4.5f);
         _glowShader.SetVector3("uColor", new Vector3(1.0f, 0.7f, 0.3f));
@@ -609,6 +626,10 @@ public sealed class Renderer : IDisposable
         _planetShader.Use();
         _planetShader.SetMatrix4("uView", cam.ViewMatrix);
         _planetShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _planetShader.SetFloat("uFcoef", Fcoef(cam));
+        _planetShader.SetFloat("uPlanetRadius", p.VisualRadius);
+        _planetShader.SetVector2("uViewportSize", new Vector2(FramebufferSize.X, FramebufferSize.Y));
+        _planetShader.SetFloat("uMinPixelRadius", MinPixelRadius);
         // Order (row-vector convention): scale -> spin around Y -> axial tilt around Z -> translate.
         // Negate the spin so positive RotationPeriodHours (e.g. Earth/Mars/Jupiter) yields the
         // correct counter-clockwise spin when viewed from the planet's north pole; negative
@@ -638,6 +659,7 @@ public sealed class Renderer : IDisposable
         _ringShader.Use();
         _ringShader.SetMatrix4("uView", cam.ViewMatrix);
         _ringShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _ringShader.SetFloat("uFcoef", Fcoef(cam));
         var model = Matrix4.CreateScale(saturn.VisualRadius)
                     * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(saturn.AxisTiltDeg))
                     * Matrix4.CreateTranslation(saturn.Position);
@@ -755,9 +777,29 @@ layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aUv;
 uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
+uniform vec3 uPlanetCenter;
+uniform float uPlanetRadius;
+uniform vec2 uViewportSize;
+uniform float uMinPixelRadius;
+uniform float uFcoef;
 out vec3 vWorldPos; out vec3 vNormal; out vec2 vUv;
 void main(){
     vec4 wp = uModel * vec4(aPos,1.0);
+
+    // Minimum screen-space size: if the body's projected radius is smaller than
+    // uMinPixelRadius pixels, expand vertex offsets outward from uPlanetCenter so
+    // the silhouette never collapses to a single pixel. In real-scale mode this is
+    // what keeps the planets visible even from astronomical distances. The radial
+    // outward expansion preserves the world-space normal computed in the FS as
+    // normalize(vWorldPos - uPlanetCenter), so lighting remains correct.
+    if (uMinPixelRadius > 0.0 && uPlanetRadius > 0.0) {
+        vec4 cView = uView * vec4(uPlanetCenter, 1.0);
+        float zd = max(-cView.z, 1e-4);
+        float pxRadius = uPlanetRadius * uProj[1][1] / zd * 0.5 * uViewportSize.y;
+        float k = max(1.0, uMinPixelRadius / max(pxRadius, 1e-4));
+        wp.xyz = uPlanetCenter + (wp.xyz - uPlanetCenter) * k;
+    }
+
     vWorldPos = wp.xyz;
     // OpenTK uses row-vector matrices, so uploaded uModel is the transpose of the
     // mathematical column-vector matrix. Use inverse-transpose to get the proper
@@ -766,6 +808,10 @@ void main(){
     vNormal = normalMat * aNormal;
     vUv = aUv;
     gl_Position = uProj * uView * wp;
+    // Logarithmic depth: remaps gl_Position.z so depth precision is distributed
+    // logarithmically over the [near, far] range, eliminating z-fighting at the huge
+    // dynamic range needed for real-scale (R) mode. Fcoef = 2 / log2(far + 1).
+    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
 }";
     private const string PlanetFS = @"#version 330 core
 in vec3 vWorldPos; in vec3 vNormal; in vec2 vUv;
@@ -803,7 +849,11 @@ void main(){
     private const string OrbitVS = @"#version 330 core
 layout(location=0) in vec3 aPos;
 uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
-void main(){ gl_Position = uProj * uView * uModel * vec4(aPos,1.0); }";
+uniform float uFcoef;
+void main(){
+    gl_Position = uProj * uView * uModel * vec4(aPos,1.0);
+    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
+}";
     private const string OrbitFS = @"#version 330 core
 out vec4 fragColor; uniform vec4 uColor;
 void main(){ fragColor = uColor; }";
@@ -814,10 +864,12 @@ void main(){ fragColor = uColor; }";
 layout(location=0) in vec3 aPos;
 layout(location=1) in float aAge;
 uniform mat4 uView; uniform mat4 uProj;
+uniform float uFcoef;
 out float vAge;
 void main(){
     vAge = aAge;
     gl_Position = uProj * uView * vec4(aPos, 1.0);
+    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
 }";
     private const string TrailFS = @"#version 330 core
 in float vAge; out vec4 fragColor; uniform vec4 uColor;
@@ -869,7 +921,13 @@ void main(){
     private const string RingVS = @"#version 330 core
 layout(location=0) in vec3 aPos; layout(location=1) in vec2 aUv;
 uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
-out vec2 vUv; void main(){ vUv = aUv; gl_Position = uProj * uView * uModel * vec4(aPos,1.0); }";
+uniform float uFcoef;
+out vec2 vUv;
+void main(){
+    vUv = aUv;
+    gl_Position = uProj * uView * uModel * vec4(aPos,1.0);
+    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
+}";
     private const string RingFS = @"#version 330 core
 in vec2 vUv; out vec4 fragColor; uniform sampler2D uTex;
 void main(){ fragColor = texture(uTex, vUv); }";
@@ -877,12 +935,14 @@ void main(){ fragColor = texture(uTex, vUv); }";
     private const string GlowVS = @"#version 330 core
 layout(location=0) in vec2 aPos; layout(location=1) in vec2 aUv;
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform float uSize;
+uniform float uFcoef;
 out vec2 vUv;
 void main(){
     // Billboard: place center, then offset by quad in view space.
     vec4 cs = uView * vec4(uCenter, 1.0);
     cs.xy += aPos * uSize;
     gl_Position = uProj * cs;
+    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
     vUv = aPos; // -1..1
 }";
     private const string GlowFS = @"#version 330 core

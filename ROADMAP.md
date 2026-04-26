@@ -9,7 +9,7 @@ Priorities are subjective — anything here is fair game, in any order.
 
 1. ~~**Bloom / HDR glow on Sun & flares** — fullscreen post-process: extract bright pixels → Gaussian blur → additive composite. Will instantly raise the perceived production value.~~ ✅ **Done** — implemented in `Renderer` as an HDR (RGBA16F) offscreen target + bright-pass + 6-pass separable Gaussian blur + additive composite (`BeginScene` / `EndSceneAndApplyBloom`).
 2. ~~**Smooth focus transition + planet trails** — lerp `Camera.Target` and `Distance` over ~0.5 s instead of snapping; render a fading line strip behind each planet for the last *N* positions. Looks "cinematic" especially at high simulation speed.~~ ✅ **Done** — `SolarSystemWindow.FocusOn` now starts a 0.5 s smoothstep lerp on `Camera.Target`/`Distance` (tracking the body's live position en route); each `Planet` keeps a 200-sample ring buffer that `Renderer.DrawTrails` rasterises as a per-vertex-alpha-fading `LineStrip`. Toggle with `T`.
-3. **Logarithmic depth + minimum screen-size dots** — make the real-scale (R) mode actually usable: log-depth shader (`gl_FragDepth = log2(1+w)/log2(1+far)`) eliminates z-fighting at huge near/far ratios, and a per-body screen-space minimum size (e.g. ≥ 2 px) keeps planets visible even from astronomical distances.
+3. ~~**Logarithmic depth + minimum screen-size dots** — make the real-scale (R) mode actually usable: log-depth shader (`gl_FragDepth = log2(1+w)/log2(1+far)`) eliminates z-fighting at huge near/far ratios, and a per-body screen-space minimum size (e.g. ≥ 2 px) keeps planets visible even from astronomical distances.~~ ✅ **Done** — every 3D shader (`PlanetVS`/`SunVS`, `OrbitVS`, `RingVS`, `GlowVS`, `TrailVS`, `SolarWind`, `SolarFlares`) now writes `gl_Position.z = (log2(1 + w) * Fcoef - 1) * w` with `Fcoef = 2 / log2(far + 1)`, eliminating z-fighting across the 10⁷ near/far ratio of real-scale mode. `PlanetVS` additionally enforces a screen-space minimum silhouette by radially expanding vertices outward from `uPlanetCenter` whenever the body's projected radius drops below `Renderer.MinPixelRadius` (1 px → ~2 px diameter dot), so planets stay visible at any distance.
 
 ---
 
@@ -54,8 +54,8 @@ Priorities are subjective — anything here is fair game, in any order.
 
 | # | Feature | Notes |
 |---|---|---|
-| R1 | Logarithmic depth buffer | Custom `gl_FragDepth` in all geometry shaders to keep depth precision usable across the 10⁷ near/far range needed for true scale. |
-| R2 | Screen-space minimum body size | Vertex / geometry shader: if projected radius < 2 px, expand to 2 px so dots stay visible from any distance. |
+| R1 | Logarithmic depth buffer | ✅ Done — VS-side `gl_Position.z` remap (Outerra-style) in every 3D shader; no `gl_FragDepth` writes so early-Z is preserved. |
+| R2 | Screen-space minimum body size | ✅ Done — `PlanetVS` expands sphere vertices outward from `uPlanetCenter` when projected radius < `uMinPixelRadius` px. |
 | R3 | Adaptive star brightness | Make stars fainter when far from Sun (deep space), more saturated near a planet. |
 | R4 | "Light-time" visualisation | Optional toggle that delays the Sun's lighting by the actual `r/c` light travel time at each planet. Tiny but cute. |
 
