@@ -11,11 +11,17 @@ public sealed class SolarSystemWindow : GameWindow
 {
     public const float SunRadius = 5f;
 
+    // Moon orbit parameters (visual, not to scale).
+    private const float MoonOrbitRadius = 4.0f;        // world units from Earth's center
+    private const float MoonOrbitInclinationDeg = 5.145f;
+    private const double MoonOrbitalPeriodDays = 27.321661;
+
     private readonly Renderer _renderer = new();
     private readonly Camera _camera = new();
     private readonly SolarWind _solarWind = new();
     private BitmapFont _font = null!;
     private Planet[] _planets = null!;
+    private Planet _moon = null!;
 
     private double _simDays;          // days since J2000
     private double _daysPerSecond = 1.0;
@@ -52,6 +58,30 @@ public sealed class SolarSystemWindow : GameWindow
         }
 
         _renderer.BuildOrbits(_planets);
+
+        // The Moon: a small companion that orbits Earth, not the Sun. It reuses the planet
+        // shader/sphere mesh via Renderer.DrawPlanet, but its Position is computed each frame
+        // as Earth.Position + (rotating offset) instead of from heliocentric Kepler elements.
+        _moon = new Planet
+        {
+            Name = "Moon",
+            VisualRadius = 0.4f,
+            RealRadiusKm = 1737.4,
+            ProceduralColor = new Vector3(0.78f, 0.78f, 0.75f),
+            TextureFile = "8k_moon.jpg",
+            AxisTiltDeg = 6.68f,
+            // Tidally locked: sidereal rotation period equals its orbital period.
+            RotationPeriodHours = MoonOrbitalPeriodDays * 24.0,
+            OrbitalPeriodYears = MoonOrbitalPeriodDays / 365.25,
+            SemiMajorAxisAU = 0.00257, // ~384,400 km, used only for the info panel
+        };
+        _moon.TextureId = TextureManager.LoadOrProcedural(
+            _moon.TextureFile,
+            (byte)(_moon.ProceduralColor.X * 255),
+            (byte)(_moon.ProceduralColor.Y * 255),
+            (byte)(_moon.ProceduralColor.Z * 255),
+            out _moon.TextureFromFile);
+
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
         _camera.ResetDefault();
     }
@@ -86,6 +116,23 @@ public sealed class SolarSystemWindow : GameWindow
                 if (angle < 0) angle += TwoPi;
                 p.RotationAngleRad = (float)angle;
             }
+        }
+
+        // Moon orbits Earth in a circle inclined to the ecliptic. Position is purely visual.
+        {
+            var earth = _planets[2];
+            double moonAngle = (_simDays / MoonOrbitalPeriodDays) * TwoPi;
+            float cx = (float)Math.Cos(moonAngle) * MoonOrbitRadius;
+            float cz = (float)Math.Sin(moonAngle) * MoonOrbitRadius;
+            float incl = MathHelper.DegreesToRadians(MoonOrbitInclinationDeg);
+            float cy = cz * MathF.Sin(incl);
+            cz *= MathF.Cos(incl);
+            _moon.Position = earth.Position + new Vector3(cx, cy, cz);
+            _moon.HelioAU = earth.HelioAU; // for info panel "distance from Sun" approximation
+            double mAngle = (_simDays * 24.0 / _moon.RotationPeriodHours) * TwoPi;
+            mAngle %= TwoPi;
+            if (mAngle < 0) mAngle += TwoPi;
+            _moon.RotationAngleRad = (float)mAngle;
         }
 
         if (_focusIndex >= 0)
@@ -157,6 +204,7 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.DrawSun(_camera, Vector3.Zero, SunRadius);
         foreach (var p in _planets)
             _renderer.DrawPlanet(_camera, p, Vector3.Zero);
+        _renderer.DrawPlanet(_camera, _moon, Vector3.Zero);
 
         var saturn = _planets[5];
         _renderer.DrawSaturnRing(_camera, saturn);
@@ -174,6 +222,9 @@ public sealed class SolarSystemWindow : GameWindow
                 _renderer.DrawLabel(_font, _camera,
                     p.Position + new Vector3(0, p.VisualRadius + 1.0f, 0),
                     p.Name, 13, new Vector4(0.85f, 0.9f, 1f, 0.95f));
+            _renderer.DrawLabel(_font, _camera,
+                _moon.Position + new Vector3(0, _moon.VisualRadius + 0.5f, 0),
+                _moon.Name, 12, new Vector4(0.85f, 0.85f, 0.85f, 0.9f));
         }
 
         // UI overlay

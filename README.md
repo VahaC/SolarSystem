@@ -2,9 +2,7 @@
 
 A real-time, physically-flavoured 3D simulation of our Solar System, written in C# 14 on .NET 10 with **OpenTK 4** (OpenGL 4.5). Eight planets orbit the Sun on Keplerian paths, spin on tilted axes, cast Phong-shaded highlights, drag a glittering solar wind in their wake, and float against a 360° Milky Way sky.
 
-![Solar System](docs/screenshot.png)
-
-> *Add a screenshot at `docs/screenshot.png` to make this README sparkle.*
+![Solar System](docs/screenshot.jpg)
 
 ---
 
@@ -12,7 +10,8 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 
 - **Keplerian orbits** — eccentricity, inclination, ascending node, argument of periapsis, mean anomaly at J2000. Position is solved from Kepler's equation each frame.
 - **Eight real planets** with 8K diffuse textures (procedural fallback if a file is missing).
-- **Axial rotation & tilt** — each planet spins at its real sidereal rate around its real obliquity (Venus & Uranus correctly retrograde).
+- **The Moon** — orbits Earth on a 27.32-day inclined circle, tidally locked (same face always toward Earth).
+- **Axial rotation & tilt**
 - **Phong-lit shading** from a single point light at the origin.
 - **Saturn's rings** — alpha-blended texture ring, properly tilted with the planet.
 - **Procedural Milky Way sky** rendered from a fullscreen quad via inverse view-projection.
@@ -76,7 +75,8 @@ textures/
 ├── 8k_jupiter.jpg
 ├── 8k_saturn.jpg
 ├── 8k_uranus.jpg
-└── 8k_neptune.jpg
+├── 8k_neptune.jpg
+└── 8k_moon.jpg
 ```
 
 If a file is missing, the planet is rendered with a procedurally-tinted placeholder texture, so the simulation always runs.
