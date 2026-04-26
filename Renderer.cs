@@ -28,6 +28,7 @@ public sealed class Renderer : IDisposable
     private ShaderProgram _textShader = null!;
     private ShaderProgram _starsShader = null!;
     private ShaderProgram _trailShader = null!;
+    private ShaderProgram _cloudShader = null!;
 
     // Sun / Sky
     private int _sunTexture;
@@ -649,9 +650,56 @@ public sealed class Renderer : IDisposable
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindTexture(TextureTarget.Texture2D, p.TextureId);
         _planetShader.SetInt("uTex", 0);
+        // V4: optional night-side city-lights map on texture unit 1. Always bind
+        // something (0 = the default texture) so undefined behaviour can't leak in.
+        GL.ActiveTexture(TextureUnit.Texture1);
+        GL.BindTexture(TextureTarget.Texture2D, p.NightTextureId);
+        _planetShader.SetInt("uNightTex", 1);
+        _planetShader.SetInt("uHasNight", p.NightTextureId != 0 ? 1 : 0);
+        GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindVertexArray(_sphereVao);
         GL.DrawElements(PrimitiveType.Triangles, _sphereIndexCount, DrawElementsType.UnsignedInt, 0);
         GL.BindVertexArray(0);
+    }
+
+    /// <summary>V3: draws a slightly-larger alpha-blended cloud sphere around
+    /// <paramref name="p"/> using <see cref="Planet.CloudTextureId"/>. No-op if the
+    /// planet has no cloud texture. Uses the planet shader's vertex stage so the
+    /// log-depth + min-pixel-size pipeline applies, plus a dedicated FS that
+    /// derives alpha from cloud luminance.</summary>
+    public void DrawClouds(Camera cam, Planet p, Vector3 sunPos)
+    {
+        if (p.CloudTextureId == 0) return;
+        _cloudShader.Use();
+        _cloudShader.SetMatrix4("uView", cam.ViewMatrix);
+        _cloudShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _cloudShader.SetFloat("uFcoef", Fcoef(cam));
+        float cloudRadius = p.VisualRadius * 1.012f;
+        _cloudShader.SetFloat("uPlanetRadius", cloudRadius);
+        _cloudShader.SetVector2("uViewportSize", new Vector2(FramebufferSize.X, FramebufferSize.Y));
+        // Skip the screen-space minimum-size expansion: the cloud sphere should never
+        // pop out beyond the planet silhouette when the body shrinks to a few pixels.
+        _cloudShader.SetFloat("uMinPixelRadius", 0f);
+        var model = Matrix4.CreateScale(cloudRadius)
+                    * Matrix4.CreateRotationY(-p.CloudRotationAngleRad)
+                    * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(p.AxisTiltDeg))
+                    * Matrix4.CreateTranslation(p.Position);
+        _cloudShader.SetMatrix4("uModel", model);
+        _cloudShader.SetVector3("uPlanetCenter", p.Position);
+        _cloudShader.SetVector3("uLightPos", sunPos);
+        _cloudShader.SetVector3("uLightColor", new Vector3(1.0f, 0.96f, 0.88f));
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, p.CloudTextureId);
+        _cloudShader.SetInt("uTex", 0);
+
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.DepthMask(false);
+        GL.BindVertexArray(_sphereVao);
+        GL.DrawElements(PrimitiveType.Triangles, _sphereIndexCount, DrawElementsType.UnsignedInt, 0);
+        GL.BindVertexArray(0);
+        GL.DepthMask(true);
+        GL.Disable(EnableCap.Blend);
     }
 
     /// <summary>Draws the comet's pre-built orbit polyline using the shared orbit
@@ -772,6 +820,7 @@ public sealed class Renderer : IDisposable
         _textShader = new ShaderProgram(TextVS, TextFS);
         _starsShader = new ShaderProgram(SkyVS, SkyFS);
         _trailShader = new ShaderProgram(TrailVS, TrailFS);
+        _cloudShader = new ShaderProgram(PlanetVS, CloudFS);
         _brightShader = new ShaderProgram(PostVS, BrightFS);
         _blurShader = new ShaderProgram(PostVS, BlurFS);
         _compositeShader = new ShaderProgram(PostVS, CompositeFS);
@@ -822,6 +871,8 @@ void main(){
 in vec3 vWorldPos; in vec3 vNormal; in vec2 vUv;
 out vec4 fragColor;
 uniform sampler2D uTex;
+uniform sampler2D uNightTex;
+uniform int uHasNight;
 uniform vec3 uLightPos; uniform vec3 uViewPos; uniform vec3 uLightColor; uniform vec3 uTint;
 uniform vec3 uPlanetCenter;
 void main(){
@@ -830,13 +881,42 @@ void main(){
     vec3 L = normalize(uLightPos - vWorldPos);
     vec3 V = normalize(uViewPos - vWorldPos);
     vec3 R = reflect(-L, N);
-    float diff = max(dot(N,L), 0.0);
+    float NdotL = dot(N, L);
+    float diff = max(NdotL, 0.0);
     float spec = pow(max(dot(V,R), 0.0), 24.0) * 0.15;
     vec3 base = texture(uTex, vUv).rgb * uTint;
     vec3 ambient = base * 0.18;
     vec3 lit = base * uLightColor * diff;
     vec3 color = ambient + lit + uLightColor * spec * diff;
+    // V4: night-side emissive map (city lights). Only contributes on the dark
+    // side of the terminator and fades smoothly across it.
+    if (uHasNight != 0) {
+        vec3 night = texture(uNightTex, vUv).rgb;
+        float nightMix = 1.0 - smoothstep(-0.05, 0.2, NdotL);
+        color += night * nightMix;
+    }
     fragColor = vec4(color, 1.0);
+}";
+
+    // V3: cloud-layer fragment shader. Reuses PlanetVS so the cloud sphere
+    // participates in the log-depth pipeline. Alpha is derived from the cloud
+    // texture's luminance so JPG sources work without a dedicated alpha channel.
+    private const string CloudFS = @"#version 330 core
+in vec3 vWorldPos; in vec3 vNormal; in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec3 uPlanetCenter;
+uniform vec3 uLightPos;
+uniform vec3 uLightColor;
+void main(){
+    vec3 N = normalize(vWorldPos - uPlanetCenter);
+    vec3 L = normalize(uLightPos - vWorldPos);
+    float NdotL = max(dot(N, L), 0.0);
+    vec3 c = texture(uTex, vUv).rgb;
+    float lum = max(c.r, max(c.g, c.b));
+    float a = smoothstep(0.18, 0.92, lum);
+    vec3 lit = c * uLightColor * (0.10 + 0.90 * NdotL);
+    fragColor = vec4(lit, a);
 }";
 
     private const string SunVS = PlanetVS;
@@ -1035,6 +1115,7 @@ void main(){
         _textShader?.Dispose();
         _starsShader?.Dispose();
         _trailShader?.Dispose();
+        _cloudShader?.Dispose();
         _brightShader?.Dispose();
         _blurShader?.Dispose();
         _compositeShader?.Dispose();

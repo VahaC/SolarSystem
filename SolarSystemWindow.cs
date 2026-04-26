@@ -123,6 +123,21 @@ public sealed class SolarSystemWindow : GameWindow
 
         _renderer.BuildOrbits(_planets);
 
+        // V3 + V4: load Earth's cloud layer and night-side city-lights textures if
+        // present in textures/. Both are optional — if a file is missing the planet
+        // simply renders without the corresponding effect.
+        foreach (var p in _planets)
+        {
+            if (p.Name == "Earth")
+            {
+                if (TextureManager.TryLoadFile("8k_earth_clouds.jpg", out int clouds))
+                    p.CloudTextureId = clouds;
+                if (TextureManager.TryLoadFile("8k_earth_nightmap.jpg", out int night))
+                    p.NightTextureId = night;
+                break;
+            }
+        }
+
         // The Moon: a small companion that orbits Earth, not the Sun. It reuses the planet
         // shader/sphere mesh via Renderer.DrawPlanet, but its Position is computed each frame
         // as Earth.Position + (rotating offset) instead of from heliocentric Kepler elements.
@@ -210,6 +225,15 @@ public sealed class SolarSystemWindow : GameWindow
                 angle %= TwoPi;
                 if (angle < 0) angle += TwoPi;
                 p.RotationAngleRad = (float)angle;
+            }
+            // V3: cloud layer drifts slightly slower than the surface so it
+            // counter-rotates relative to the ground.
+            if (p.CloudTextureId != 0 && p.RotationPeriodHours != 0.0)
+            {
+                double cloudAngle = (_simDays * 24.0 / p.RotationPeriodHours - _simDays * 0.08) * TwoPi;
+                cloudAngle %= TwoPi;
+                if (cloudAngle < 0) cloudAngle += TwoPi;
+                p.CloudRotationAngleRad = (float)cloudAngle;
             }
         }
 
@@ -460,6 +484,12 @@ public sealed class SolarSystemWindow : GameWindow
         foreach (var m in _moons)
             _renderer.DrawPlanet(_camera, m.Body, Vector3.Zero);
         _renderer.DrawPlanet(_camera, _comet.Body, Vector3.Zero);
+
+        // V3: cloud layer for any planet that has one (currently just Earth).
+        // Drawn after the opaque planet pass so alpha-blending composites over
+        // the surface — including the V4 night-side city-lights baked into PlanetFS.
+        foreach (var p in visible)
+            _renderer.DrawClouds(_camera, p, Vector3.Zero);
 
         var saturn = _planets[5];
         _renderer.DrawSaturnRing(_camera, saturn);

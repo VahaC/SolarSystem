@@ -39,6 +39,14 @@ public sealed class Planet
     public int TextureId;
     public bool TextureFromFile;
 
+    /// <summary>Optional night-side emissive map (e.g. Earth city lights). 0 = none.</summary>
+    public int NightTextureId;
+    /// <summary>Optional cloud layer texture (e.g. Earth clouds). 0 = none.</summary>
+    public int CloudTextureId;
+    /// <summary>Independent rotation angle for the cloud layer so it can drift relative
+    /// to the surface. Updated per frame by <see cref="SolarSystemWindow"/>.</summary>
+    public float CloudRotationAngleRad;
+
     // --- Trail (fading line strip of recent world-space positions) ---
     /// <summary>Maximum number of samples retained for the trail line strip.</summary>
     public const int TrailCapacity = 200;

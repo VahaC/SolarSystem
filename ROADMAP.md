@@ -19,8 +19,8 @@ Priorities are subjective — anything here is fair game, in any order.
 |---|---|---|
 | V1 | Bloom / HDR glow on Sun & particles | ✅ Implemented (RGBA16F FBO + bright-pass + separable Gaussian + additive composite). |
 | V2 | Atmospheric rim-light (Earth, Venus, Jupiter, Neptune) | Fresnel `pow(1-dot(N,V), 3)` tinted by atmosphere colour in planet shader. |
-| V3 | Earth cloud layer | Second alpha-blended sphere using `8k_earth_clouds.jpg`, slowly counter-rotating. |
-| V4 | Earth night-side city lights | `8k_earth_nightmap.jpg`; in shader: `mix(night, day, smoothstep(0, 0.2, NdotL))`. |
+| V3 | Earth cloud layer | ✅ Done. `Renderer.DrawClouds` rasterises a second sphere at `1.012 × VisualRadius` using a dedicated `CloudFS` (reuses `PlanetVS` so log-depth + min-pixel apply). Alpha is derived from cloud-texture luminance via `smoothstep(0.18, 0.92, lum)` so the JPG source works without a dedicated alpha channel. Drawn alpha-blended after the opaque planet pass with depth-write off. The cloud sphere has its own `Planet.CloudRotationAngleRad`, advanced at `(spinRate − 0.08 rev/sim-day)` so the layer drifts westward relative to the surface. Loads `textures/8k_earth_clouds.jpg` opportunistically — missing file → no clouds. |
+| V4 | Earth night-side city lights | ✅ Done. `PlanetFS` now takes an optional `uNightTex` + `uHasNight` flag; on the dark side of the terminator it adds `night × (1 − smoothstep(-0.05, 0.2, NdotL))` to the lit colour, so emissive city lights only appear where direct sun illumination drops off. `Planet.NightTextureId` is populated from `textures/8k_earth_nightmap.jpg` when present (no-op otherwise), and the night sampler is bound on TU1 in `Renderer.DrawPlanet`. |
 | V5 | Saturn ring shadow on the planet (and vice versa) | Ray-vs-disk in planet shader / ray-vs-sphere in ring shader. |
 | V6 | Lens flare on the Sun | Screen-space ghosts when the Sun is near the camera forward axis. |
 | V7 | Improved Milky Way sky | Actual equirectangular `8k_stars_milkyway.jpg` instead of procedural noise. |
