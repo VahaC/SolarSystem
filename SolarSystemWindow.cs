@@ -40,6 +40,7 @@ public sealed class SolarSystemWindow : GameWindow
 
     private double _simDays;          // days since J2000
     private double _daysPerSecond = 1.0;
+    private bool _paused;             // freezes sim time without resetting _daysPerSecond
     private bool _showOrbits = true;
     private bool _showAxes;
     private bool _showLabels = true;
@@ -118,7 +119,8 @@ public sealed class SolarSystemWindow : GameWindow
     {
         base.OnUpdateFrame(args);
 
-        _simDays += _daysPerSecond * args.Time;
+        if (!_paused)
+            _simDays += _daysPerSecond * args.Time;
 
         // Update positions and axial rotation
         const double TwoPi = Math.PI * 2.0;
@@ -164,12 +166,19 @@ public sealed class SolarSystemWindow : GameWindow
         if (_focusIndex >= 0)
             _camera.Target = _planets[_focusIndex].Position;
 
-        _solarWind.Update((float)args.Time, Vector3.Zero, SunRadius);
-        _solarFlares.Update((float)args.Time, Vector3.Zero, SunRadius);
+        // Pause must also freeze the Sun's particle effects, otherwise the wind keeps
+        // streaming and flares keep erupting while the planets are perfectly still.
+        // Feed dt=0 (instead of skipping the call) so any internal state stays valid.
+        float fxDt = _paused ? 0f : (float)args.Time;
+        _solarWind.Update(fxDt, Vector3.Zero, SunRadius);
+        _solarFlares.Update(fxDt, Vector3.Zero, SunRadius);
 
         // Title with current sim date
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind  [F] flares  [R] scale";
+        string speedStr = _paused
+            ? "PAUSED"
+            : $"{(_daysPerSecond < 0 ? "◀ " : "")}x{Math.Abs(_daysPerSecond):0.##} days/s";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind  [F] flares  [R] scale";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -186,6 +195,7 @@ public sealed class SolarSystemWindow : GameWindow
                 Close();
                 break;
 
+            case Keys.Space: _paused = !_paused; break;
             case Keys.O: _showOrbits = !_showOrbits; break;
             case Keys.A: _showAxes = !_showAxes; break;
             case Keys.L: _showLabels = !_showLabels; break;
@@ -195,11 +205,29 @@ public sealed class SolarSystemWindow : GameWindow
 
             case Keys.KeyPadAdd:
             case Keys.Equal:
-                _daysPerSecond = Math.Min(1000.0, _daysPerSecond * 1.5);
+            {
+                // Operate on magnitude so reverse-time playback can also be sped up.
+                double sign = _daysPerSecond < 0 ? -1.0 : 1.0;
+                double mag = Math.Min(1000.0, Math.Abs(_daysPerSecond) * 1.5);
+                _daysPerSecond = sign * mag;
                 break;
+            }
             case Keys.KeyPadSubtract:
             case Keys.Minus:
-                _daysPerSecond = Math.Max(0.1, _daysPerSecond / 1.5);
+            {
+                double sign = _daysPerSecond < 0 ? -1.0 : 1.0;
+                double mag = Math.Max(0.1, Math.Abs(_daysPerSecond) / 1.5);
+                _daysPerSecond = sign * mag;
+                break;
+            }
+
+            // Reverse-time controls: ',' forces backward playback, '.' forces forward.
+            // Magnitude is preserved so toggling direction doesn't change speed.
+            case Keys.Comma:
+                _daysPerSecond = -Math.Abs(_daysPerSecond);
+                break;
+            case Keys.Period:
+                _daysPerSecond = Math.Abs(_daysPerSecond);
                 break;
 
             case Keys.D0:
@@ -266,7 +294,10 @@ public sealed class SolarSystemWindow : GameWindow
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
         var white = new Vector4(1f, 1f, 1f, 0.95f);
         _renderer.DrawText(_font, $"Date    {date:yyyy-MM-dd}", 12, 12, 16, white);
-        _renderer.DrawText(_font, $"Speed   {_daysPerSecond:0.##} d/s", 12, 32, 16, white);
+        string hudSpeed = _paused
+            ? "Speed   PAUSED"
+            : $"Speed   {(_daysPerSecond < 0 ? "-" : "")}{Math.Abs(_daysPerSecond):0.##} d/s {(_daysPerSecond < 0 ? "(reverse)" : "")}";
+        _renderer.DrawText(_font, hudSpeed, 12, 32, 16, white);
         _renderer.DrawText(_font, $"Orbits  {(_showOrbits ? "on" : "off")}    Labels  {(_showLabels ? "on" : "off")}", 12, 52, 14, white);
 
         // Top-left help panel listing every available control.
@@ -280,6 +311,8 @@ public sealed class SolarSystemWindow : GameWindow
             "Dbl-click   focus body\n" +
             "Dbl empty   unfocus\n" +
             "0           Sun  /  1-8 planet\n" +
+            "Space       pause / resume\n" +
+            ", / .       reverse / forward\n" +
             "+ / -       sim speed\n" +
             "O           toggle orbits\n" +
             "L           toggle labels\n" +

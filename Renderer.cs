@@ -130,8 +130,13 @@ public sealed class Renderer : IDisposable
             {
                 uint a = (uint)(i * (slices + 1) + j);
                 uint b = (uint)((i + 1) * (slices + 1) + j);
-                idx.Add(a); idx.Add(b); idx.Add(a + 1);
-                idx.Add(a + 1); idx.Add(b); idx.Add(b + 1);
+                // CCW winding when viewed from outside the sphere, so the default
+                // GL_BACK face culling discards the far (inside) hemisphere and we
+                // render the near hemisphere. Swapping these orders is what causes
+                // the "inverted lighting" symptom: with the wrong winding only the
+                // far side is rasterized, so the lit/dark sides appear flipped.
+                idx.Add(a); idx.Add(a + 1); idx.Add(b);
+                idx.Add(a + 1); idx.Add(b + 1); idx.Add(b);
             }
         }
         _sphereIndexCount = idx.Count;

@@ -29,7 +29,7 @@ Priorities are subjective — anything here is fair game, in any order.
 
 | # | Feature | Notes |
 |---|---|---|
-| S1 | Pause (Space) and reverse-time keys (`,` / `.`) | Trivial; sign-flip `_daysPerSecond`. |
+| S1 | Pause (Space) and reverse-time keys (`,` / `.`) | ✅ Done. `Space` toggles pause; `,` plays backward, `.` plays forward (magnitude preserved); `+`/`-` work in both directions. |
 | S2 | Planet trails | Ring buffer of last N positions per body, drawn as fading line strip. |
 | S3 | Asteroid belt | ~10 k instanced billboards or tiny spheres between Mars and Jupiter, randomised semi-major axes / eccentricities / inclinations within real ranges. |
 | S4 | Comet with ion / dust tail | High-eccentricity Kepler orbit; particle tail always pointing away from the Sun. |
