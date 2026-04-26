@@ -1,0 +1,669 @@
+using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
+
+namespace SolarSystem;
+
+public sealed class Renderer : IDisposable
+{
+    // Meshes
+    private int _sphereVao, _sphereVbo, _sphereEbo, _sphereIndexCount;
+    private int _orbitVao, _orbitVbo, _orbitVertexCount;
+    private int[] _orbitOffsets = Array.Empty<int>();
+    private int[] _orbitCounts = Array.Empty<int>();
+    private int _starVao, _starVbo, _starCount;
+    private int _ringVao, _ringVbo, _ringEbo, _ringIndexCount;
+    private int _quadVao, _quadVbo;
+    private int _axisVao, _axisVbo;
+    private int _textVao, _textVbo;
+    private const int TextMaxQuads = 1024;
+
+    // Shaders
+    private ShaderProgram _planetShader = null!;
+    private ShaderProgram _sunShader = null!;
+    private ShaderProgram _orbitShader = null!;
+    private ShaderProgram _starShader = null!;
+    private ShaderProgram _ringShader = null!;
+    private ShaderProgram _glowShader = null!;
+    private ShaderProgram _textShader = null!;
+    private ShaderProgram _starsShader = null!;
+
+    // Sun / Sky
+    private int _sunTexture;
+    private int _ringTexture;
+    private int _starsTexture;
+
+    public Vector2i FramebufferSize { get; set; } = new(1280, 800);
+
+    public void Initialize()
+    {
+        BuildSphere(64, 64);
+        BuildStars(2000);
+        BuildRing(64);
+        BuildQuad();
+        BuildAxisLine();
+        BuildTextBuffer();
+        CompileShaders();
+
+        _sunTexture = TextureManager.TryLoadFile("8k_sun.jpg", out int sunTex)
+            ? sunTex : TextureManager.CreateProcedural(255, 220, 110);
+        _ringTexture = TextureManager.TryLoadFile("8k_saturn_ring_alpha.png", out int ringTex)
+            ? ringTex : TextureManager.CreateRingTexture();
+        _starsTexture = TextureManager.TryLoadFile("8k_stars_milky_way.jpg", out int skyTex)
+            ? skyTex : TextureManager.CreateProcedural(8, 8, 18);
+
+        GL.Enable(EnableCap.DepthTest);
+        GL.Enable(EnableCap.CullFace);
+        GL.CullFace(CullFaceMode.Back);
+        GL.Enable(EnableCap.ProgramPointSize);
+        GL.ClearColor(0.01f, 0.01f, 0.025f, 1f);
+    }
+
+    public void BuildOrbits(Planet[] planets, int samples = 256)
+    {
+        var verts = new List<float>(planets.Length * samples * 3);
+        _orbitOffsets = new int[planets.Length];
+        _orbitCounts = new int[planets.Length];
+        for (int i = 0; i < planets.Length; i++)
+        {
+            _orbitOffsets[i] = verts.Count / 3;
+            float s = OrbitalMechanics.OrbitWorldScale(planets[i].SemiMajorAxisAU);
+            var pts = OrbitalMechanics.SampleOrbit(planets[i], samples);
+            foreach (var p in pts)
+            {
+                verts.Add((float)(p.X * s));
+                verts.Add((float)(p.Y * s));
+                verts.Add((float)(p.Z * s));
+            }
+            _orbitCounts[i] = samples;
+        }
+        _orbitVertexCount = verts.Count / 3;
+        if (_orbitVao == 0)
+        {
+            _orbitVao = GL.GenVertexArray();
+            _orbitVbo = GL.GenBuffer();
+        }
+        GL.BindVertexArray(_orbitVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _orbitVbo);
+        var arr = verts.ToArray();
+        GL.BufferData(BufferTarget.ArrayBuffer, arr.Length * sizeof(float), arr, BufferUsageHint.StaticDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+        GL.BindVertexArray(0);
+    }
+
+    private void BuildSphere(int stacks, int slices)
+    {
+        var verts = new List<float>();
+        var idx = new List<uint>();
+        for (int i = 0; i <= stacks; i++)
+        {
+            float v = (float)i / stacks;
+            float phi = v * MathF.PI;
+            for (int j = 0; j <= slices; j++)
+            {
+                float u = (float)j / slices;
+                float theta = u * MathF.PI * 2f;
+                float x = MathF.Sin(phi) * MathF.Cos(theta);
+                float y = MathF.Cos(phi);
+                float z = MathF.Sin(phi) * MathF.Sin(theta);
+                verts.Add(x); verts.Add(y); verts.Add(z); // pos
+                verts.Add(x); verts.Add(y); verts.Add(z); // normal
+                verts.Add(u); verts.Add(1f - v);          // uv
+            }
+        }
+        for (int i = 0; i < stacks; i++)
+        {
+            for (int j = 0; j < slices; j++)
+            {
+                uint a = (uint)(i * (slices + 1) + j);
+                uint b = (uint)((i + 1) * (slices + 1) + j);
+                idx.Add(a); idx.Add(b); idx.Add(a + 1);
+                idx.Add(a + 1); idx.Add(b); idx.Add(b + 1);
+            }
+        }
+        _sphereIndexCount = idx.Count;
+        _sphereVao = GL.GenVertexArray();
+        _sphereVbo = GL.GenBuffer();
+        _sphereEbo = GL.GenBuffer();
+        GL.BindVertexArray(_sphereVao);
+        var va = verts.ToArray();
+        var ia = idx.ToArray();
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _sphereVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, va.Length * sizeof(float), va, BufferUsageHint.StaticDraw);
+        GL.BindBuffer(BufferTarget.ElementArrayBuffer, _sphereEbo);
+        GL.BufferData(BufferTarget.ElementArrayBuffer, ia.Length * sizeof(uint), ia, BufferUsageHint.StaticDraw);
+        int stride = 8 * sizeof(float);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+        GL.EnableVertexAttribArray(1);
+        GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+        GL.EnableVertexAttribArray(2);
+        GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    private void BuildStars(int count)
+    {
+        _starCount = count;
+        var rng = new Random(42);
+        var data = new float[count * 4]; // x,y,z,brightness
+        for (int i = 0; i < count; i++)
+        {
+            // Uniformly distributed on a large sphere shell
+            double u = rng.NextDouble() * 2 - 1;
+            double t = rng.NextDouble() * Math.PI * 2;
+            double s = Math.Sqrt(1 - u * u);
+            float r = 1500f;
+            data[i * 4 + 0] = (float)(s * Math.Cos(t)) * r;
+            data[i * 4 + 1] = (float)u * r;
+            data[i * 4 + 2] = (float)(s * Math.Sin(t)) * r;
+            data[i * 4 + 3] = 0.4f + (float)rng.NextDouble() * 0.6f;
+        }
+        _starVao = GL.GenVertexArray();
+        _starVbo = GL.GenBuffer();
+        GL.BindVertexArray(_starVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _starVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, data.Length * sizeof(float), data, BufferUsageHint.StaticDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
+        GL.EnableVertexAttribArray(1);
+        GL.VertexAttribPointer(1, 1, VertexAttribPointerType.Float, false, 4 * sizeof(float), 3 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    private void BuildRing(int segments)
+    {
+        // Flat annulus in XZ plane. inner radius 1.4, outer radius 2.4 (relative to planet radius).
+        const float inner = 1.35f, outer = 2.4f;
+        var verts = new List<float>();
+        var idx = new List<uint>();
+        for (int i = 0; i <= segments; i++)
+        {
+            float t = (float)i / segments;
+            float a = t * MathF.PI * 2f;
+            float c = MathF.Cos(a), s = MathF.Sin(a);
+            verts.Add(c * inner); verts.Add(0); verts.Add(s * inner); verts.Add(0f); verts.Add(0.5f);
+            verts.Add(c * outer); verts.Add(0); verts.Add(s * outer); verts.Add(1f); verts.Add(0.5f);
+        }
+        for (int i = 0; i < segments; i++)
+        {
+            uint a = (uint)(i * 2);
+            idx.Add(a); idx.Add(a + 1); idx.Add(a + 2);
+            idx.Add(a + 2); idx.Add(a + 1); idx.Add(a + 3);
+        }
+        _ringIndexCount = idx.Count;
+        _ringVao = GL.GenVertexArray();
+        _ringVbo = GL.GenBuffer();
+        _ringEbo = GL.GenBuffer();
+        GL.BindVertexArray(_ringVao);
+        var va = verts.ToArray();
+        var ia = idx.ToArray();
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _ringVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, va.Length * sizeof(float), va, BufferUsageHint.StaticDraw);
+        GL.BindBuffer(BufferTarget.ElementArrayBuffer, _ringEbo);
+        GL.BufferData(BufferTarget.ElementArrayBuffer, ia.Length * sizeof(uint), ia, BufferUsageHint.StaticDraw);
+        int stride = 5 * sizeof(float);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+        GL.EnableVertexAttribArray(1);
+        GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    private void BuildQuad()
+    {
+        // Unit centered quad with uvs.
+        float[] q =
+        {
+            -1,-1, 0,0,
+             1,-1, 1,0,
+             1, 1, 1,1,
+            -1,-1, 0,0,
+             1, 1, 1,1,
+            -1, 1, 0,1,
+        };
+        _quadVao = GL.GenVertexArray();
+        _quadVbo = GL.GenBuffer();
+        GL.BindVertexArray(_quadVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _quadVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, q.Length * sizeof(float), q, BufferUsageHint.StaticDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
+        GL.EnableVertexAttribArray(1);
+        GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), 2 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    private void BuildAxisLine()
+    {
+        // Two-vertex line segment along local Y from -1.5 to +1.5 (in planet-radius units).
+        float[] line = { 0f, -1.5f, 0f, 0f, 1.5f, 0f };
+        _axisVao = GL.GenVertexArray();
+        _axisVbo = GL.GenBuffer();
+        GL.BindVertexArray(_axisVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _axisVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, line.Length * sizeof(float), line, BufferUsageHint.StaticDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+        GL.BindVertexArray(0);
+    }
+
+    /// <summary>Draws each planet's rotation axis as a line, applying ONLY the axial tilt and translation
+    /// (no spin, no view-dependent transform). Useful to visually verify the axis is fixed in world space.</summary>
+    public void DrawPlanetAxes(Camera cam, Planet[] planets)
+    {
+        _orbitShader.Use();
+        _orbitShader.SetMatrix4("uView", cam.ViewMatrix);
+        _orbitShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _orbitShader.SetVector4("uColor", new Vector4(1f, 0.2f, 0.2f, 0.9f));
+        GL.BindVertexArray(_axisVao);
+        foreach (var p in planets)
+        {
+            // Same scale + tilt + translate as DrawPlanet, but no spin.
+            // Make axis line a bit longer than the planet so it's clearly visible.
+            var model = Matrix4.CreateScale(p.VisualRadius * 1.6f)
+                        * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(p.AxisTiltDeg))
+                        * Matrix4.CreateTranslation(p.Position);
+            _orbitShader.SetMatrix4("uModel", model);
+            GL.DrawArrays(PrimitiveType.Lines, 0, 2);
+        }
+        GL.BindVertexArray(0);
+    }
+
+    private void BuildTextBuffer()
+    {
+        _textVao = GL.GenVertexArray();
+        _textVbo = GL.GenBuffer();
+        GL.BindVertexArray(_textVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _textVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, TextMaxQuads * 6 * 4 * sizeof(float),
+            IntPtr.Zero, BufferUsageHint.DynamicDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
+        GL.EnableVertexAttribArray(1);
+        GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), 2 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    // ---------------- DRAW ----------------
+
+    public void Clear()
+    {
+        GL.Viewport(0, 0, FramebufferSize.X, FramebufferSize.Y);
+        GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+    }
+
+    public void DrawStars(Camera cam)
+    {
+        // Fullscreen-quad sky. Per-pixel we reconstruct the world-space view direction
+        // from clip-space coordinates using the inverse of (view-without-translation * proj),
+        // then sample an equirectangular texture. No sphere, no culling, no xyww trick.
+        _starsShader.Use();
+        var view = cam.ViewMatrix;
+        view.M41 = 0; view.M42 = 0; view.M43 = 0; // strip translation
+        var vp = view * cam.ProjectionMatrix;
+        Matrix4.Invert(vp, out var invVp);
+        _starsShader.SetMatrix4("uInvViewProj", invVp);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, _starsTexture);
+        _starsShader.SetInt("uTex", 0);
+        GL.DepthMask(false);
+        GL.Disable(EnableCap.DepthTest);
+        GL.Disable(EnableCap.CullFace);
+        GL.BindVertexArray(_quadVao);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        GL.BindVertexArray(0);
+        GL.Enable(EnableCap.CullFace);
+        GL.Enable(EnableCap.DepthTest);
+        GL.DepthMask(true);
+    }
+
+    public void DrawOrbits(Camera cam, Planet[] planets)
+    {
+        _orbitShader.Use();
+        _orbitShader.SetMatrix4("uView", cam.ViewMatrix);
+        _orbitShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _orbitShader.SetMatrix4("uModel", Matrix4.Identity);
+        _orbitShader.SetVector4("uColor", new Vector4(0.4f, 0.4f, 0.55f, 0.6f));
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.BindVertexArray(_orbitVao);
+        for (int i = 0; i < planets.Length; i++)
+            GL.DrawArrays(PrimitiveType.LineLoop, _orbitOffsets[i], _orbitCounts[i]);
+        GL.BindVertexArray(0);
+        GL.Disable(EnableCap.Blend);
+    }
+
+    public void DrawSun(Camera cam, Vector3 sunPos, float radius)
+    {
+        // Solid bright sphere
+        _sunShader.Use();
+        _sunShader.SetMatrix4("uView", cam.ViewMatrix);
+        _sunShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        var model = Matrix4.CreateScale(radius) * Matrix4.CreateTranslation(sunPos);
+        _sunShader.SetMatrix4("uModel", model);
+        _sunShader.SetVector3("uColor", new Vector3(1.0f, 0.85f, 0.45f));
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, _sunTexture);
+        _sunShader.SetInt("uTex", 0);
+        GL.BindVertexArray(_sphereVao);
+        GL.DrawElements(PrimitiveType.Triangles, _sphereIndexCount, DrawElementsType.UnsignedInt, 0);
+        GL.BindVertexArray(0);
+
+        // Halo billboard, additive blending
+        _glowShader.Use();
+        _glowShader.SetMatrix4("uView", cam.ViewMatrix);
+        _glowShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _glowShader.SetVector3("uCenter", sunPos);
+        _glowShader.SetFloat("uSize", radius * 4.5f);
+        _glowShader.SetVector3("uColor", new Vector3(1.0f, 0.7f, 0.3f));
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+        GL.DepthMask(false);
+        GL.BindVertexArray(_quadVao);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        GL.BindVertexArray(0);
+        GL.DepthMask(true);
+        GL.Disable(EnableCap.Blend);
+    }
+
+    public void DrawPlanet(Camera cam, Planet p, Vector3 sunPos)
+    {
+        _planetShader.Use();
+        _planetShader.SetMatrix4("uView", cam.ViewMatrix);
+        _planetShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        // Order (row-vector convention): scale -> spin around Y -> axial tilt around Z -> translate.
+        // Negate the spin so positive RotationPeriodHours (e.g. Earth/Mars/Jupiter) yields the
+        // correct counter-clockwise spin when viewed from the planet's north pole; negative
+        // periods (Venus, Uranus) automatically become retrograde.
+        var model = Matrix4.CreateScale(p.VisualRadius)
+                    * Matrix4.CreateRotationY(-p.RotationAngleRad)
+                    * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(p.AxisTiltDeg))
+                    * Matrix4.CreateTranslation(p.Position);
+        _planetShader.SetMatrix4("uModel", model);
+        _planetShader.SetVector3("uPlanetCenter", p.Position);
+        _planetShader.SetVector3("uLightPos", sunPos);
+        _planetShader.SetVector3("uViewPos", cam.Eye);
+        _planetShader.SetVector3("uLightColor", new Vector3(1.0f, 0.96f, 0.88f));
+        // Tint is only used to colorize procedural fallback textures.
+        // For file-loaded textures use white so colors are reproduced faithfully.
+        _planetShader.SetVector3("uTint", p.TextureFromFile ? Vector3.One : p.ProceduralColor);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, p.TextureId);
+        _planetShader.SetInt("uTex", 0);
+        GL.BindVertexArray(_sphereVao);
+        GL.DrawElements(PrimitiveType.Triangles, _sphereIndexCount, DrawElementsType.UnsignedInt, 0);
+        GL.BindVertexArray(0);
+    }
+
+    public void DrawSaturnRing(Camera cam, Planet saturn)
+    {
+        _ringShader.Use();
+        _ringShader.SetMatrix4("uView", cam.ViewMatrix);
+        _ringShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        var model = Matrix4.CreateScale(saturn.VisualRadius)
+                    * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(saturn.AxisTiltDeg))
+                    * Matrix4.CreateTranslation(saturn.Position);
+        _ringShader.SetMatrix4("uModel", model);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, _ringTexture);
+        _ringShader.SetInt("uTex", 0);
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.Disable(EnableCap.CullFace);
+        GL.BindVertexArray(_ringVao);
+        GL.DrawElements(PrimitiveType.Triangles, _ringIndexCount, DrawElementsType.UnsignedInt, 0);
+        GL.BindVertexArray(0);
+        GL.Enable(EnableCap.CullFace);
+        GL.Disable(EnableCap.Blend);
+    }
+
+    /// <summary>Draws a string in screen space. Origin = top-left of screen, x grows right, y grows down.
+    /// `pixelSize` is the desired line height (em-height) in screen pixels; glyph metrics from
+    /// the rasterized font are scaled by pixelSize / FontPixelSize so text remains crisp.</summary>
+    public void DrawText(BitmapFont font, string text, float x, float y, float pixelSize, Vector4 color)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+
+        float scale = pixelSize / font.FontPixelSize;
+        float lineStep = font.LineHeight * scale;
+
+        var verts = new List<float>(text.Length * 24);
+        float cx = x;
+        float cy = y;
+        foreach (char ch in text)
+        {
+            if (ch == '\n') { cx = x; cy += lineStep; continue; }
+            var g = font.GetGlyph(ch);
+            if (g.Size.X > 0 && g.Size.Y > 0)
+            {
+                float x0 = cx + g.Offset.X * scale;
+                float y0 = cy + g.Offset.Y * scale;
+                float x1 = x0 + g.Size.X * scale;
+                float y1 = y0 + g.Size.Y * scale;
+                float u0 = g.Uv.X, v0 = g.Uv.Y, u1 = g.Uv.Z, v1 = g.Uv.W;
+                verts.AddRange(new[] {
+                    x0,y0, u0,v0,
+                    x1,y0, u1,v0,
+                    x1,y1, u1,v1,
+                    x0,y0, u0,v0,
+                    x1,y1, u1,v1,
+                    x0,y1, u0,v1,
+                });
+            }
+            cx += g.Advance * scale;
+        }
+        if (verts.Count == 0) return;
+
+        _textShader.Use();
+        var ortho = Matrix4.CreateOrthographicOffCenter(0, FramebufferSize.X, FramebufferSize.Y, 0, -1, 1);
+        _textShader.SetMatrix4("uProj", ortho);
+        _textShader.SetVector4("uColor", color);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, font.Texture);
+        _textShader.SetInt("uTex", 0);
+
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.Disable(EnableCap.DepthTest);
+        // The orthographic matrix flips Y (screen y=0 -> NDC y=+1), which makes our
+        // text quads clockwise in NDC and therefore back-facing under the global
+        // CullFaceMode.Back state. Disable culling for the text pass.
+        GL.Disable(EnableCap.CullFace);
+
+        GL.BindVertexArray(_textVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _textVbo);
+        var arr = verts.ToArray();
+        int byteLen = Math.Min(arr.Length, TextMaxQuads * 6 * 4) * sizeof(float);
+        GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, byteLen, arr);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, Math.Min(arr.Length / 4, TextMaxQuads * 6));
+        GL.BindVertexArray(0);
+
+        GL.Enable(EnableCap.CullFace);
+        GL.Enable(EnableCap.DepthTest);
+        GL.Disable(EnableCap.Blend);
+    }
+
+    /// <summary>Draws a label at a world position by projecting to screen.</summary>
+    public void DrawLabel(BitmapFont font, Camera cam, Vector3 worldPos, string text, float pixelSize, Vector4 color)
+    {
+        var clip = new Vector4(worldPos, 1f) * cam.ViewMatrix * cam.ProjectionMatrix;
+        if (clip.W <= 0) return;
+        var ndc = clip.Xyz / clip.W;
+        if (ndc.Z < -1 || ndc.Z > 1) return;
+        float sx = (ndc.X * 0.5f + 0.5f) * FramebufferSize.X;
+        float sy = (1f - (ndc.Y * 0.5f + 0.5f)) * FramebufferSize.Y;
+        DrawText(font, text, sx + 8, sy - pixelSize * 0.5f, pixelSize, color);
+    }
+
+    // ---------------- Shaders ----------------
+    private void CompileShaders()
+    {
+        _planetShader = new ShaderProgram(PlanetVS, PlanetFS);
+        _sunShader = new ShaderProgram(SunVS, SunFS);
+        _orbitShader = new ShaderProgram(OrbitVS, OrbitFS);
+        _starShader = new ShaderProgram(StarVS, StarFS);
+        _ringShader = new ShaderProgram(RingVS, RingFS);
+        _glowShader = new ShaderProgram(GlowVS, GlowFS);
+        _textShader = new ShaderProgram(TextVS, TextFS);
+        _starsShader = new ShaderProgram(SkyVS, SkyFS);
+    }
+
+    private const string PlanetVS = @"#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUv;
+uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
+out vec3 vWorldPos; out vec3 vNormal; out vec2 vUv;
+void main(){
+    vec4 wp = uModel * vec4(aPos,1.0);
+    vWorldPos = wp.xyz;
+    // OpenTK uses row-vector matrices, so uploaded uModel is the transpose of the
+    // mathematical column-vector matrix. Use inverse-transpose to get the proper
+    // normal matrix that rotates the normal in the same direction as the position.
+    mat3 normalMat = transpose(inverse(mat3(uModel)));
+    vNormal = normalMat * aNormal;
+    vUv = aUv;
+    gl_Position = uProj * uView * wp;
+}";
+    private const string PlanetFS = @"#version 330 core
+in vec3 vWorldPos; in vec3 vNormal; in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec3 uLightPos; uniform vec3 uViewPos; uniform vec3 uLightColor; uniform vec3 uTint;
+uniform vec3 uPlanetCenter;
+void main(){
+    // Sphere normal from world geometry (independent of model-matrix conventions).
+    vec3 N = normalize(vWorldPos - uPlanetCenter);
+    vec3 L = normalize(uLightPos - vWorldPos);
+    vec3 V = normalize(uViewPos - vWorldPos);
+    vec3 R = reflect(-L, N);
+    float diff = max(dot(N,L), 0.0);
+    float spec = pow(max(dot(V,R), 0.0), 24.0) * 0.15;
+    vec3 base = texture(uTex, vUv).rgb * uTint;
+    vec3 ambient = base * 0.18;
+    vec3 lit = base * uLightColor * diff;
+    vec3 color = ambient + lit + uLightColor * spec * diff;
+    fragColor = vec4(color, 1.0);
+}";
+
+    private const string SunVS = PlanetVS;
+    private const string SunFS = @"#version 330 core
+in vec3 vWorldPos; in vec3 vNormal; in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uTex; uniform vec3 uColor;
+void main(){
+    vec3 base = texture(uTex, vUv).rgb;
+    fragColor = vec4(base * uColor * 1.4, 1.0);
+}";
+
+    private const string OrbitVS = @"#version 330 core
+layout(location=0) in vec3 aPos;
+uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
+void main(){ gl_Position = uProj * uView * uModel * vec4(aPos,1.0); }";
+    private const string OrbitFS = @"#version 330 core
+out vec4 fragColor; uniform vec4 uColor;
+void main(){ fragColor = uColor; }";
+
+    private const string StarVS = @"#version 330 core
+layout(location=0) in vec3 aPos; layout(location=1) in float aBrightness;
+uniform mat4 uView; uniform mat4 uProj;
+out float vB;
+void main(){ gl_Position = uProj * uView * vec4(aPos,1.0); gl_PointSize = 1.5 + aBrightness*1.5; vB = aBrightness; }";
+    private const string StarFS = @"#version 330 core
+in float vB; out vec4 fragColor;
+void main(){ fragColor = vec4(vec3(vB), 1.0); }";
+
+    // Sky pipeline: a fullscreen quad whose fragment shader reconstructs the world-space
+    // view direction per pixel from clip-space coordinates and samples an equirectangular
+    // texture. The quad covers the whole screen at depth=1 (far plane), so it never occludes
+    // the scene as long as DepthMask is off and DepthTest is disabled while drawing it.
+    private const string SkyVS = @"#version 330 core
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUv;
+out vec2 vNdc;
+void main(){
+    vNdc = aPos;                       // _quadVao positions are already in NDC (-1..1)
+    gl_Position = vec4(aPos, 1.0, 1.0); // far plane
+}";
+    private const string SkyFS = @"#version 330 core
+in vec2 vNdc; out vec4 fragColor;
+uniform sampler2D uTex;
+uniform mat4 uInvViewProj;
+void main(){
+    // Reconstruct world-space direction from clip-space. With camera translation
+    // stripped from the view matrix, the camera sits at the world origin for the sky
+    // pass, so the resulting world point IS the view direction.
+    vec4 wp = uInvViewProj * vec4(vNdc, 1.0, 1.0);
+    vec3 dir = normalize(wp.xyz / wp.w);
+    // Equirectangular UV: longitude from atan2(z, x), latitude from asin(y).
+    float u = atan(dir.z, dir.x) / 6.2831853 + 0.5;
+    float v = asin(clamp(dir.y, -1.0, 1.0)) / 3.1415926 + 0.5;
+    vec3 c = texture(uTex, vec2(u, 1.0 - v)).rgb;
+    // Slight darken so the bright milky way doesn't drown out planets.
+    fragColor = vec4(c * 0.7, 1.0);
+}";
+
+    private const string RingVS = @"#version 330 core
+layout(location=0) in vec3 aPos; layout(location=1) in vec2 aUv;
+uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
+out vec2 vUv; void main(){ vUv = aUv; gl_Position = uProj * uView * uModel * vec4(aPos,1.0); }";
+    private const string RingFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor; uniform sampler2D uTex;
+void main(){ fragColor = texture(uTex, vUv); }";
+
+    private const string GlowVS = @"#version 330 core
+layout(location=0) in vec2 aPos; layout(location=1) in vec2 aUv;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform float uSize;
+out vec2 vUv;
+void main(){
+    // Billboard: place center, then offset by quad in view space.
+    vec4 cs = uView * vec4(uCenter, 1.0);
+    cs.xy += aPos * uSize;
+    gl_Position = uProj * cs;
+    vUv = aPos; // -1..1
+}";
+    private const string GlowFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor; uniform vec3 uColor;
+void main(){
+    float d = length(vUv);
+    float a = pow(max(0.0, 1.0 - d), 2.5);
+    fragColor = vec4(uColor * a, a);
+}";
+
+    private const string TextVS = @"#version 330 core
+layout(location=0) in vec2 aPos; layout(location=1) in vec2 aUv;
+uniform mat4 uProj; out vec2 vUv;
+void main(){ vUv = aUv; gl_Position = uProj * vec4(aPos, 0.0, 1.0); }";
+    private const string TextFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor; uniform sampler2D uTex; uniform vec4 uColor;
+void main(){
+    // Atlas is RGBA8 with white opaque pixels for ink and transparent elsewhere,
+    // so the alpha channel is the glyph mask.
+    float a = texture(uTex, vUv).a;
+    if (a < 0.05) discard;
+    fragColor = vec4(uColor.rgb, uColor.a * a);
+}";
+
+    public void Dispose()
+    {
+        _planetShader?.Dispose();
+        _sunShader?.Dispose();
+        _orbitShader?.Dispose();
+        _starShader?.Dispose();
+        _ringShader?.Dispose();
+        _glowShader?.Dispose();
+        _textShader?.Dispose();
+        _starsShader?.Dispose();
+        GL.DeleteVertexArray(_sphereVao); GL.DeleteBuffer(_sphereVbo); GL.DeleteBuffer(_sphereEbo);
+        GL.DeleteVertexArray(_orbitVao); GL.DeleteBuffer(_orbitVbo);
+        GL.DeleteVertexArray(_starVao); GL.DeleteBuffer(_starVbo);
+        GL.DeleteVertexArray(_ringVao); GL.DeleteBuffer(_ringVbo); GL.DeleteBuffer(_ringEbo);
+        GL.DeleteVertexArray(_quadVao); GL.DeleteBuffer(_quadVbo);
+        GL.DeleteVertexArray(_axisVao); GL.DeleteBuffer(_axisVbo);
+        GL.DeleteVertexArray(_textVao); GL.DeleteBuffer(_textVbo);
+        GL.DeleteTexture(_sunTexture);
+        GL.DeleteTexture(_ringTexture);
+        GL.DeleteTexture(_starsTexture);
+    }
+}
