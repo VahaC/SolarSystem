@@ -43,12 +43,12 @@ Priorities are subjective — anything here is fair game, in any order.
 | # | Feature | Notes |
 |---|---|---|
 | Q1 | Smooth focus transitions | ✅ Done — see Top picks #2. |
-| Q2 | Click-to-pick the Moon | `TryPick` currently iterates only over planets + Sun — extend to `_moon`. |
-| Q3 | Search bodies by name | Ctrl+F overlay with autocomplete over `_planets[].Name` (+ Moon, Sun, future bodies). |
-| Q4 | Screenshot key | F12 → `GL.ReadPixels` + `System.Drawing` PNG export to `screenshots/`. |
-| Q5 | Persisted settings | Save camera/yaw/pitch/distance, sim speed, focus, toggles to `%AppData%/SolarSystem/state.json` on exit and reload on launch. |
-| Q6 | Mouse hover tooltip | Tiny tooltip with body name + distance when the cursor hovers over a body. |
-| Q7 | FPS / particle-count overlay | Optional debug HUD (`~` key) showing FPS, draw calls, particle counts, scale mode. |
+| Q2 | Click-to-pick the Moon | ✅ Done. `SolarSystemWindow` now keeps a flat `_extraBodies` array (Moon + Galileans + Titan + Halley) and `TryPick` projects them alongside the planets. Selection / focus indices ≥ `_planets.Length` address into this array via the new `GetBody(int)` helper, so single-click info, double-click focus, smooth transition tracking and `ToggleRealScale` zoom-fit all transparently work for non-planet bodies. |
+| Q3 | Search bodies by name | ✅ Done. `Ctrl+F` opens a top-of-screen modal prompt mirroring the date-seek lifecycle; typing live-filters every focusable body (Sun + planets + dwarfs + Moon + major moons + comet) by case-insensitive prefix-then-substring match, with the top 5 candidates previewed. `Enter` focuses the best match (and updates the info panel); `Esc` cancels. |
+| Q4 | Screenshot key | ✅ Done. `F12` calls `SaveScreenshot` which `GL.ReadPixels` BGRA from the back buffer (post-bloom composite), copies rows into a `System.Drawing` `Bitmap` flipped vertically, and saves PNG to `screenshots/screenshot_yyyyMMdd_HHmmss.png`. Windows-only via `[SupportedOSPlatform("windows")]`; the keypath is gated by `OperatingSystem.IsWindows()` so non-Windows builds compile cleanly. A short status banner ("Saved …") reuses the date-seek feedback overlay. |
+| Q5 | Persisted settings | ✅ Done. `TryLoadPersistedState` / `TrySavePersistedState` round-trip a `PersistedState` POCO via `System.Text.Json` to `%AppData%/SolarSystem/state.json`. Saved fields: camera (yaw/pitch/distance/target), `_simDays`, `_daysPerSecond`, `_paused`, `_focusIndex`, every UI toggle, solar-wind / flares enabled flags and `OrbitalMechanics.RealScale`. Load runs at the end of `OnLoad` (after the world is fully built); save runs first thing in `OnUnload`. RealScale is applied first via `ToggleRealScale` so the camera distance is clamped against the right limits. |
+| Q6 | Mouse hover tooltip | ✅ Done. `OnMouseMove` caches `_mousePos`; once per frame `OnUpdateFrame` runs `TryPick(_mousePos)` and stores `_hoverIndex`. The render pass draws a tiny "Name\n0.000 AU" tooltip (heliocentric distance) anchored next to the cursor whenever the hover hits a body. Suppressed while the date-seek or name-search prompt is open. |
+| Q7 | FPS / particle-count overlay | ✅ Done. `~` (`Keys.GraveAccent`) toggles `_showHud`. The HUD smooths FPS over a 0.5 s window (`_fpsAccum` / `_fpsFrames`) and prints FPS, scale mode, live wind / flare / comet-tail particle counts (`ActiveCount / MaxParticles`) and the asteroid-belt count, top-right corner. |
 
 ## 🌌 Real-scale mode UX
 

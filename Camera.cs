@@ -51,19 +51,19 @@ public sealed class Camera
     public Matrix4 ProjectionMatrix =>
         Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(FovDeg), Aspect, Near, Far);
 
-    private bool _leftDown, _middleDown;
+    private bool _rightDown, _middleDown;
     private Vector2 _lastMouse;
 
     public void HandleMouseDown(MouseButtonEventArgs e, Vector2 pos)
     {
-        if (e.Button == MouseButton.Left) _leftDown = true;
+        if (e.Button == MouseButton.Right) _rightDown = true;
         if (e.Button == MouseButton.Middle) _middleDown = true;
         _lastMouse = pos;
     }
 
     public void HandleMouseUp(MouseButtonEventArgs e)
     {
-        if (e.Button == MouseButton.Left) _leftDown = false;
+        if (e.Button == MouseButton.Right) _rightDown = false;
         if (e.Button == MouseButton.Middle) _middleDown = false;
     }
 
@@ -71,7 +71,7 @@ public sealed class Camera
     {
         var d = pos - _lastMouse;
         _lastMouse = pos;
-        if (_leftDown)
+        if (_rightDown)
         {
             Yaw -= d.X * 0.005f;
             Pitch += d.Y * 0.005f;

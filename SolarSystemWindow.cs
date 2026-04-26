@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.Versioning;
+using System.Text.Json;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
@@ -64,6 +67,31 @@ public sealed class SolarSystemWindow : GameWindow
     /// switching back restores these originals.</summary>
     private float[] _inflatedPlanetRadii = null!;
     private float _inflatedMoonRadius;
+
+    // Q2: flat list of pickable / focusable non-planet bodies (Moon, major moons, comet).
+    // Indices in <see cref="_selectedIndex"/> / <see cref="_focusIndex"/> >= _planets.Length
+    // refer into this array, offset by _planets.Length.
+    private Planet[] _extraBodies = [];
+
+    // Q3: name search prompt state. Mirrors the date-seek prompt's lifecycle.
+    private bool _searchActive;
+    private string _searchBuffer = "";
+    private bool _searchSwallowNextChar;
+
+    // Q6: cursor position (window-local) and hover-pick result, refreshed on mouse move.
+    private Vector2 _mousePos;
+    private int _hoverIndex = -2;
+
+    // Q7: HUD overlay (FPS / particle counts) toggled with the backtick key.
+    private bool _showHud;
+    private double _fpsAccum;
+    private int _fpsFrames;
+    private double _fpsValue;
+
+    // Q5: persisted UI state file.
+    private static string StateFilePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "SolarSystem", "state.json");
 
     private double _simDays;          // days since J2000
     private double _daysPerSecond = 1.0;
@@ -191,8 +219,19 @@ public sealed class SolarSystemWindow : GameWindow
         for (int i = 0; i < _planets.Length; i++) _inflatedPlanetRadii[i] = _planets[i].VisualRadius;
         _inflatedMoonRadius = _moon.VisualRadius;
 
+        // Q2: flat array of non-planet bodies that share the planet pick / focus pipeline.
+        // Order matters — index = _planets.Length + position-in-this-array.
+        var extras = new List<Planet> { _moon };
+        foreach (var m in _moons) extras.Add(m.Body);
+        extras.Add(_comet.Body);
+        _extraBodies = [.. extras];
+
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
         _camera.ResetDefault();
+
+        // Q5: restore persisted UI state. Done last so it can override the freshly
+        // initialised camera / toggles / scale mode.
+        TryLoadPersistedState();
     }
 
     protected override void OnResize(ResizeEventArgs e)
@@ -310,14 +349,15 @@ public sealed class SolarSystemWindow : GameWindow
             _focusTransitionElapsed += args.Time;
             float t = (float)Math.Clamp(_focusTransitionElapsed / FocusTransitionSeconds, 0.0, 1.0);
             float s = t * t * (3f - 2f * t); // smoothstep
-            Vector3 end = _focusIndex >= 0 ? _planets[_focusIndex].Position : Vector3.Zero;
+            Vector3 end = GetBody(_focusIndex)?.Position ?? Vector3.Zero;
             _camera.Target = Vector3.Lerp(_focusStartTarget, end, s);
             _camera.Distance = MathHelper.Lerp(_focusStartDistance, _focusEndDistance, s);
             if (t >= 1f) _focusTransitioning = false;
         }
-        else if (_focusIndex >= 0)
+        else
         {
-            _camera.Target = _planets[_focusIndex].Position;
+            var followed = GetBody(_focusIndex);
+            if (followed != null) _camera.Target = followed.Position;
         }
 
         // Pause must also freeze the Sun's particle effects, otherwise the wind keeps
@@ -337,6 +377,23 @@ public sealed class SolarSystemWindow : GameWindow
         // Clear stale seek-feedback message after a few seconds.
         if (_seekFeedback.Length > 0 && GLFW.GetTime() > _seekFeedbackUntil)
             _seekFeedback = "";
+
+        // Q6: refresh hover-pick once per frame; tooltip rendering reads _hoverIndex.
+        // Skipped while a modal prompt is open so it doesn't fight with the prompt UI.
+        if (!_seekActive && !_searchActive)
+            _hoverIndex = TryPick(_mousePos);
+        else
+            _hoverIndex = -2;
+
+        // Q7: smoothed FPS counter (1 Hz update so the digits don't jitter).
+        _fpsAccum += args.Time;
+        _fpsFrames++;
+        if (_fpsAccum >= 0.5)
+        {
+            _fpsValue = _fpsFrames / _fpsAccum;
+            _fpsAccum = 0;
+            _fpsFrames = 0;
+        }
 
         // Title with current sim date
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
@@ -376,6 +433,37 @@ public sealed class SolarSystemWindow : GameWindow
             return;
         }
 
+        // Q3: name-search prompt. Same modal lifecycle as the date prompt above.
+        if (_searchActive)
+        {
+            switch (e.Key)
+            {
+                case Keys.Escape:
+                    _searchActive = false;
+                    _searchBuffer = "";
+                    break;
+                case Keys.Enter:
+                case Keys.KeyPadEnter:
+                    ApplyNameSearch();
+                    break;
+                case Keys.Backspace:
+                    if (_searchBuffer.Length > 0)
+                        _searchBuffer = _searchBuffer[..^1];
+                    break;
+            }
+            return;
+        }
+
+        // Q3: Ctrl+F opens the name-search prompt. Handled before the F-key fallthrough
+        // so it doesn't also toggle the solar flares.
+        if (e.Key == Keys.F && (e.Modifiers & KeyModifiers.Control) != 0)
+        {
+            _searchActive = true;
+            _searchBuffer = "";
+            _searchSwallowNextChar = true;
+            return;
+        }
+
         switch (e.Key)
         {
             case Keys.Escape:
@@ -400,8 +488,8 @@ public sealed class SolarSystemWindow : GameWindow
                 // the camera doesn't keep tracking an invisible body.
                 if (!_showDwarfs)
                 {
-                    if (_focusIndex >= _dwarfStart) FocusOn(-1);
-                    if (_selectedIndex >= _dwarfStart) _selectedIndex = -2;
+                    if (_focusIndex >= _dwarfStart && _focusIndex < _planets.Length) FocusOn(-1);
+                    if (_selectedIndex >= _dwarfStart && _selectedIndex < _planets.Length) _selectedIndex = -2;
                     // Clear stale dwarf trails so they don't reappear as a frozen line strip
                     // on the next toggle-on.
                     for (int i = _dwarfStart; i < _planets.Length; i++) _planets[i].TrailReset();
@@ -411,6 +499,14 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
             case Keys.R: ToggleRealScale(); break;
             case Keys.C: _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; break;
+
+            // Q7: HUD overlay (FPS + particle counts).
+            case Keys.GraveAccent: _showHud = !_showHud; break;
+
+            // Q4: screenshot to ./screenshots/<timestamp>.png.
+            case Keys.F12:
+                if (OperatingSystem.IsWindows()) SaveScreenshot();
+                break;
 
             case Keys.KeyPadAdd:
             case Keys.Equal:
@@ -552,7 +648,7 @@ public sealed class SolarSystemWindow : GameWindow
         var dim = new Vector4(0.85f, 0.9f, 1f, 0.85f);
         const string help =
             "Controls\n" +
-            "LMB drag    orbit camera\n" +
+            "RMB drag    orbit camera\n" +
             "MMB drag    pan camera\n" +
             "Wheel       zoom\n" +
             "Click body  show info\n" +
@@ -569,6 +665,9 @@ public sealed class SolarSystemWindow : GameWindow
             "D           toggle dwarf planets\n" +
             "C           toggle constellations\n" +
             "J           jump to date / ±days\n" +
+            "Ctrl+F      search bodies\n" +
+            "F12         screenshot\n" +
+            "~           FPS / particle HUD\n" +
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
             "R           real / compressed scale\n" +
@@ -577,9 +676,10 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Info panel (multi-line) for selected body
         string info;
-        if (_selectedIndex >= 0)
+        var selectedBody = GetBody(_selectedIndex);
+        if (selectedBody != null)
         {
-            var p = _planets[_selectedIndex];
+            var p = selectedBody;
             double dist = Math.Sqrt(p.HelioAU.X * p.HelioAU.X + p.HelioAU.Y * p.HelioAU.Y + p.HelioAU.Z * p.HelioAU.Z);
             double dayHours = Math.Abs(p.RotationPeriodHours);
             string daySuffix = p.RotationPeriodHours < 0 ? " (retro)" : "";
@@ -617,11 +717,68 @@ public sealed class SolarSystemWindow : GameWindow
                 _renderer.FramebufferSize.X * 0.5f - 200f, 20f, 16f,
                 new Vector4(1f, 1f, 0.7f, 1f));
         }
+        else if (_searchActive)
+        {
+            // Q3: search prompt + top matches preview.
+            var matches = FindNameMatches(_searchBuffer, max: 5);
+            var sb = new System.Text.StringBuilder();
+            sb.Append("Search body (Enter=focus, Esc=cancel):\n> ").Append(_searchBuffer).Append('_');
+            if (matches.Count > 0)
+            {
+                sb.Append('\n');
+                for (int i = 0; i < matches.Count; i++)
+                {
+                    sb.Append(i == 0 ? "  > " : "    ");
+                    sb.Append(matches[i].name).Append('\n');
+                }
+            }
+            _renderer.DrawText(_font, sb.ToString(),
+                _renderer.FramebufferSize.X * 0.5f - 200f, 20f, 16f,
+                new Vector4(0.85f, 1f, 0.85f, 1f));
+        }
         else if (_seekFeedback.Length > 0)
         {
             _renderer.DrawText(_font, _seekFeedback,
                 _renderer.FramebufferSize.X * 0.5f - 160f, 20f, 14f,
                 new Vector4(1f, 0.9f, 0.5f, 0.9f));
+        }
+
+        // Q6: hover tooltip beside the cursor.
+        if (!_seekActive && !_searchActive)
+        {
+            string? tip = null;
+            if (_hoverIndex == -1) tip = "Sun";
+            else
+            {
+                var hb = GetBody(_hoverIndex);
+                if (hb != null)
+                {
+                    double dAU = Math.Sqrt(hb.HelioAU.X * hb.HelioAU.X + hb.HelioAU.Y * hb.HelioAU.Y + hb.HelioAU.Z * hb.HelioAU.Z);
+                    tip = $"{hb.Name}\n{dAU:0.000} AU";
+                }
+            }
+            if (tip != null)
+            {
+                _renderer.DrawText(_font, tip,
+                    _mousePos.X + 14f, _mousePos.Y + 10f, 13f,
+                    new Vector4(1f, 1f, 0.9f, 0.95f));
+            }
+        }
+
+        // Q7: HUD overlay (FPS + particle counts + scale mode). Top-right corner.
+        if (_showHud)
+        {
+            string scale = OrbitalMechanics.RealScale ? "real" : "compressed";
+            string hud =
+                $"FPS       {_fpsValue:0.}\n" +
+                $"Scale     {scale}\n" +
+                $"Wind      {_solarWind.ActiveCount} / {_solarWind.MaxParticles}\n" +
+                $"Flares    {_solarFlares.ActiveCount} / {_solarFlares.MaxParticles}\n" +
+                $"Comet     {_comet.ActiveCount} / {_comet.MaxParticles}\n" +
+                $"Belt      {_belt.Count}";
+            _renderer.DrawText(_font, hud,
+                _renderer.FramebufferSize.X - 220f, 12f, 14f,
+                new Vector4(0.7f, 1f, 0.8f, 0.95f));
         }
 
         SwapBuffers();
@@ -673,7 +830,8 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnMouseMove(MouseMoveEventArgs e)
     {
         base.OnMouseMove(e);
-        _camera.HandleMouseMove(new Vector2(e.X, e.Y));
+        _mousePos = new Vector2(e.X, e.Y);
+        _camera.HandleMouseMove(_mousePos);
     }
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
@@ -731,6 +889,17 @@ public sealed class SolarSystemWindow : GameWindow
             float r = PickRadius(_planets[i].Position, _planets[i].VisualRadius);
             if (d < r && d < bestDist) { bestDist = d; best = i; }
         }
+        // Q2: also pick the Moon, the major moons (Galileans + Titan) and the comet.
+        // They share the same projection pipeline; their unified index starts at
+        // _planets.Length and increases with their position in _extraBodies.
+        for (int i = 0; i < _extraBodies.Length; i++)
+        {
+            var b = _extraBodies[i];
+            if (!TryProject(b.Position, out var sp)) continue;
+            float d = (sp - screenPos).Length;
+            float r = PickRadius(b.Position, b.VisualRadius);
+            if (d < r && d < bestDist) { bestDist = d; best = _planets.Length + i; }
+        }
         return best;
     }
 
@@ -740,23 +909,42 @@ public sealed class SolarSystemWindow : GameWindow
         {
             _focusIndex = -1;
             BeginFocusTransition(Vector3.Zero, MathF.Max(_camera.Distance, SunRadius * 6f));
+            return;
         }
-        else if (index >= 0 && index < _planets.Length)
+
+        var body = GetBody(index);
+        if (body == null) return;
+        _focusIndex = index;
+
+        // For planets we re-evaluate the heliocentric position against the current sim
+        // time so the camera aims at where the body actually is right now. Moons and the
+        // comet body are already updated each frame in OnUpdateFrame, so their Position
+        // is already current.
+        if (index < _planets.Length)
         {
-            _focusIndex = index;
-            // Make sure the planet's world position is up-to-date for the *current* sim
-            // time so the transition aims at where the planet actually is right now.
-            var p = _planets[index];
-            p.HelioAU = OrbitalMechanics.HeliocentricPosition(p, _simDays);
-            float s = OrbitalMechanics.OrbitWorldScale(p.SemiMajorAxisAU);
-            p.Position = new Vector3(
-                (float)(p.HelioAU.X * s),
-                (float)(p.HelioAU.Y * s),
-                (float)(p.HelioAU.Z * s));
-            float endDist = MathF.Max(p.VisualRadius * 6f, _camera.MinDistance * 4f);
-            BeginFocusTransition(p.Position, endDist);
-            Debug.WriteLine($"[focus] {p.Name} target={p.Position} dist={endDist:0.##}");
+            body.HelioAU = OrbitalMechanics.HeliocentricPosition(body, _simDays);
+            float s = OrbitalMechanics.OrbitWorldScale(body.SemiMajorAxisAU);
+            body.Position = new Vector3(
+                (float)(body.HelioAU.X * s),
+                (float)(body.HelioAU.Y * s),
+                (float)(body.HelioAU.Z * s));
         }
+
+        float endDist = MathF.Max(body.VisualRadius * 6f, _camera.MinDistance * 4f);
+        BeginFocusTransition(body.Position, endDist);
+        Debug.WriteLine($"[focus] {body.Name} target={body.Position} dist={endDist:0.##}");
+    }
+
+    /// <summary>Resolve a unified body index into a <see cref="Planet"/> reference.
+    /// -1 (Sun) and -2 (none) both return <c>null</c>; planet indices map straight into
+    /// <see cref="_planets"/>; indices &gt;= <c>_planets.Length</c> address
+    /// <see cref="_extraBodies"/> (Moon, major moons, comet).</summary>
+    private Planet? GetBody(int index)
+    {
+        if (index < 0 || _planets == null) return null;
+        if (index < _planets.Length) return _planets[index];
+        int j = index - _planets.Length;
+        return j < _extraBodies.Length ? _extraBodies[j] : null;
     }
 
     /// <summary>Capture the current camera Target + Distance and kick off a smooth
@@ -818,9 +1006,11 @@ public sealed class SolarSystemWindow : GameWindow
             _camera.Distance = OrbitalMechanics.RealScale ? 3200f : 320f;
             _camera.Target = Vector3.Zero;
         }
-        else if (_focusIndex < _planets.Length)
+        else
         {
-            _camera.Distance = MathF.Max(_planets[_focusIndex].VisualRadius * 6f, _camera.MinDistance * 4f);
+            var b = GetBody(_focusIndex);
+            if (b != null)
+                _camera.Distance = MathF.Max(b.VisualRadius * 6f, _camera.MinDistance * 4f);
         }
 
         Debug.WriteLine($"[scale] {(OrbitalMechanics.RealScale ? "REAL (1 AU = 50 units)" : "compressed (a^0.45)")}");
@@ -866,11 +1056,19 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnTextInput(TextInputEventArgs e)
     {
         base.OnTextInput(e);
-        if (!_seekActive) return;
-        if (_seekSwallowNextChar) { _seekSwallowNextChar = false; return; }
-        // Cap to avoid pathological pastes; only printable characters land here.
-        if (_seekBuffer.Length < 32)
-            _seekBuffer += e.AsString;
+        if (_seekActive)
+        {
+            if (_seekSwallowNextChar) { _seekSwallowNextChar = false; return; }
+            if (_seekBuffer.Length < 32)
+                _seekBuffer += e.AsString;
+            return;
+        }
+        if (_searchActive)
+        {
+            if (_searchSwallowNextChar) { _searchSwallowNextChar = false; return; }
+            if (_searchBuffer.Length < 32)
+                _searchBuffer += e.AsString;
+        }
     }
 
     /// <summary>Parse the date-seek buffer and update <see cref="_simDays"/>.
@@ -916,6 +1114,7 @@ public sealed class SolarSystemWindow : GameWindow
 
     protected override void OnUnload()
     {
+        TrySavePersistedState();
         _solarWind.Dispose();
         _solarFlares.Dispose();
         _belt.Dispose();
@@ -924,5 +1123,217 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
+    }
+
+    // -------- Q3: name search ----------------------------------------------------
+
+    /// <summary>Enumerate every focusable body together with its unified index.
+    /// Sun is reported as -1; planets / dwarfs use their <see cref="_planets"/> index;
+    /// extras start at <c>_planets.Length</c>.</summary>
+    private IEnumerable<(int idx, string name)> EnumerateBodies()
+    {
+        yield return (-1, "Sun");
+        for (int i = 0; i < _planets.Length; i++) yield return (i, _planets[i].Name);
+        for (int i = 0; i < _extraBodies.Length; i++) yield return (_planets.Length + i, _extraBodies[i].Name);
+    }
+
+    /// <summary>Find up to <paramref name="max"/> bodies whose names start with, then
+    /// contain, the query (case-insensitive). Prefix matches rank above substring
+    /// matches; ties broken by name length.</summary>
+    private List<(int idx, string name)> FindNameMatches(string query, int max)
+    {
+        var result = new List<(int idx, string name, int rank)>();
+        if (string.IsNullOrWhiteSpace(query)) return new List<(int, string)>();
+        string q = query.Trim();
+        foreach (var (idx, name) in EnumerateBodies())
+        {
+            int p = name.IndexOf(q, StringComparison.OrdinalIgnoreCase);
+            if (p < 0) continue;
+            // rank 0 = exact, 1 = prefix, 2 = substring.
+            int rank = name.Length == q.Length ? 0 : (p == 0 ? 1 : 2);
+            result.Add((idx, name, rank));
+        }
+        result.Sort((a, b) =>
+        {
+            int c = a.rank.CompareTo(b.rank);
+            return c != 0 ? c : a.name.Length.CompareTo(b.name.Length);
+        });
+        var top = new List<(int idx, string name)>();
+        for (int i = 0; i < Math.Min(max, result.Count); i++) top.Add((result[i].idx, result[i].name));
+        return top;
+    }
+
+    private void ApplyNameSearch()
+    {
+        var matches = FindNameMatches(_searchBuffer, 1);
+        if (matches.Count > 0)
+        {
+            int idx = matches[0].idx;
+            _selectedIndex = idx;
+            FocusOn(idx);
+        }
+        _searchActive = false;
+        _searchBuffer = "";
+    }
+
+    // -------- Q4: screenshot -----------------------------------------------------
+
+    [SupportedOSPlatform("windows")]
+    private void SaveScreenshot()
+    {
+        try
+        {
+            int w = _renderer.FramebufferSize.X;
+            int h = _renderer.FramebufferSize.Y;
+            if (w <= 0 || h <= 0) return;
+
+            // Read from the default framebuffer (post-bloom composite) as BGRA so it
+            // maps directly onto a 32bppArgb GDI+ bitmap with no per-pixel swap.
+            var pixels = new byte[w * h * 4];
+            GL.PixelStore(PixelStoreParameter.PackAlignment, 1);
+            GL.ReadBuffer(ReadBufferMode.Back);
+            GL.ReadPixels(0, 0, w, h, PixelFormat.Bgra, PixelType.UnsignedByte, pixels);
+
+            Directory.CreateDirectory("screenshots");
+            string path = Path.Combine("screenshots", $"screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+
+            using (var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                var rect = new System.Drawing.Rectangle(0, 0, w, h);
+                var data = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, bmp.PixelFormat);
+                int stride = data.Stride;
+                // OpenGL origin is bottom-left, GDI+ is top-left → copy rows in reverse.
+                unsafe
+                {
+                    byte* dst = (byte*)data.Scan0;
+                    fixed (byte* srcBase = pixels)
+                    {
+                        for (int y = 0; y < h; y++)
+                        {
+                            byte* src = srcBase + (h - 1 - y) * w * 4;
+                            byte* d = dst + y * stride;
+                            System.Buffer.MemoryCopy(src, d, stride, w * 4);
+                        }
+                    }
+                }
+                bmp.UnlockBits(data);
+                bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            _seekFeedback = $"Saved {path}";
+            _seekFeedbackUntil = GLFW.GetTime() + 3.0;
+            Debug.WriteLine($"[screenshot] {path}");
+        }
+        catch (Exception ex)
+        {
+            _seekFeedback = $"Screenshot failed: {ex.Message}";
+            _seekFeedbackUntil = GLFW.GetTime() + 3.0;
+            Debug.WriteLine($"[screenshot] failed: {ex}");
+        }
+    }
+
+    // -------- Q5: persisted settings --------------------------------------------
+
+    private sealed class PersistedState
+    {
+        public float Yaw { get; set; }
+        public float Pitch { get; set; }
+        public float Distance { get; set; }
+        public float TargetX { get; set; }
+        public float TargetY { get; set; }
+        public float TargetZ { get; set; }
+        public double DaysPerSecond { get; set; } = 1.0;
+        public bool Paused { get; set; }
+        public double SimDays { get; set; }
+        public int FocusIndex { get; set; } = -1;
+        public bool ShowOrbits { get; set; } = true;
+        public bool ShowAxes { get; set; }
+        public bool ShowLabels { get; set; } = true;
+        public bool ShowTrails { get; set; } = true;
+        public bool ShowDwarfs { get; set; } = true;
+        public bool ShowConstellations { get; set; }
+        public bool ShowHud { get; set; }
+        public bool SolarWindEnabled { get; set; } = true;
+        public bool SolarFlaresEnabled { get; set; } = true;
+        public bool RealScale { get; set; }
+    }
+
+    private void TryLoadPersistedState()
+    {
+        try
+        {
+            if (!File.Exists(StateFilePath)) return;
+            var json = File.ReadAllText(StateFilePath);
+            var s = JsonSerializer.Deserialize<PersistedState>(json);
+            if (s == null) return;
+
+            // RealScale must be applied first so VisualRadii and camera limits are
+            // already correct when we restore the camera distance below.
+            if (s.RealScale != OrbitalMechanics.RealScale) ToggleRealScale();
+
+            _camera.Yaw = s.Yaw;
+            _camera.Pitch = s.Pitch;
+            _camera.Distance = Math.Clamp(s.Distance, _camera.MinDistance, _camera.MaxDistance);
+            _camera.Target = new Vector3(s.TargetX, s.TargetY, s.TargetZ);
+
+            _daysPerSecond = s.DaysPerSecond;
+            _paused = s.Paused;
+            _simDays = s.SimDays;
+            _focusIndex = s.FocusIndex;
+            _showOrbits = s.ShowOrbits;
+            _showAxes = s.ShowAxes;
+            _showLabels = s.ShowLabels;
+            _showTrails = s.ShowTrails;
+            _showDwarfs = s.ShowDwarfs;
+            _showConstellations = s.ShowConstellations;
+            _constellations.Enabled = _showConstellations;
+            _showHud = s.ShowHud;
+            _solarWind.Enabled = s.SolarWindEnabled;
+            _solarFlares.Enabled = s.SolarFlaresEnabled;
+
+            Debug.WriteLine($"[state] loaded from {StateFilePath}");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[state] load failed: {ex.Message}");
+        }
+    }
+
+    private void TrySavePersistedState()
+    {
+        try
+        {
+            var s = new PersistedState
+            {
+                Yaw = _camera.Yaw,
+                Pitch = _camera.Pitch,
+                Distance = _camera.Distance,
+                TargetX = _camera.Target.X,
+                TargetY = _camera.Target.Y,
+                TargetZ = _camera.Target.Z,
+                DaysPerSecond = _daysPerSecond,
+                Paused = _paused,
+                SimDays = _simDays,
+                FocusIndex = _focusIndex,
+                ShowOrbits = _showOrbits,
+                ShowAxes = _showAxes,
+                ShowLabels = _showLabels,
+                ShowTrails = _showTrails,
+                ShowDwarfs = _showDwarfs,
+                ShowConstellations = _showConstellations,
+                ShowHud = _showHud,
+                SolarWindEnabled = _solarWind.Enabled,
+                SolarFlaresEnabled = _solarFlares.Enabled,
+                RealScale = OrbitalMechanics.RealScale,
+            };
+            string? dir = Path.GetDirectoryName(StateFilePath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(StateFilePath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));
+            Debug.WriteLine($"[state] saved to {StateFilePath}");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[state] save failed: {ex.Message}");
+        }
     }
 }
