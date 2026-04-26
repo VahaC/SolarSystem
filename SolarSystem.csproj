@@ -11,6 +11,10 @@
     <AssemblyName>SolarSystem</AssemblyName>
   </PropertyGroup>
 
+  <PropertyGroup Condition="Exists('solar-system-logo.ico')">
+    <ApplicationIcon>solar-system-logo.ico</ApplicationIcon>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="OpenTK" Version="4.8.2" />
     <PackageReference Include="StbImageSharp" Version="2.27.13" />
@@ -19,6 +23,7 @@
 
   <ItemGroup>
     <None Include="textures\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('textures')" />
+    <None Include="solar-system-logo.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('solar-system-logo.png')" />
   </ItemGroup>
 
 </Project>
