@@ -35,6 +35,11 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly AsteroidBelt _belt = new();
     private readonly Comet _comet = new();
     private readonly Constellations _constellations = new();
+    // S9–S12.
+    private readonly Probes _probes = new();
+    private readonly LagrangePoints _lagrange = new();
+    private readonly MeteorShowers _meteors = new();
+    private readonly Bookmarks _bookmarks = new();
     private BitmapFont _font = null!;
     /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
     /// are the IAU dwarf planets appended by <see cref="Planet.CreateDwarfPlanets"/>.
@@ -102,6 +107,10 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showTrails = true;
     private bool _showDwarfs = true;
     private bool _showConstellations;
+    // S9–S11 visibility toggles.
+    private bool _showProbes = true;
+    private bool _showLagrange;
+    private bool _showMeteors = true;
     /// <summary>R4: when true each planet's spin angle is evaluated at
     /// <c>simDays - r/c</c> (where r is its heliocentric distance), so the day/night
     /// terminator falls where it was when the photons currently illuminating it
@@ -141,6 +150,9 @@ public sealed class SolarSystemWindow : GameWindow
         _belt.Initialize();
         _comet.Initialize();
         _constellations.Initialize();
+        _probes.Initialize();
+        _lagrange.Initialize();
+        _meteors.Initialize();
 
         // A4: instanced quad particles size their billboards in clip space using
         // the current viewport, so push it once now and again on every resize.
@@ -149,6 +161,7 @@ public sealed class SolarSystemWindow : GameWindow
         _solarFlares.SetViewport(initVp);
         _comet.SetViewport(initVp);
         _belt.SetViewport(initVp);
+        _meteors.SetViewport(initVp);
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
@@ -262,6 +275,7 @@ public sealed class SolarSystemWindow : GameWindow
         _solarFlares.SetViewport(vp);
         _comet.SetViewport(vp);
         _belt.SetViewport(vp);
+        _meteors.SetViewport(vp);
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)
@@ -408,6 +422,13 @@ public sealed class SolarSystemWindow : GameWindow
         _comet.UpdatePosition(_simDays);
         _comet.UpdateTail(fxDt, Vector3.Zero);
 
+        // S9–S11: probes / Lagrange points / meteor showers. All read the planets
+        // table that was just updated above, so they're spatially in sync.
+        _probes.Update(_simDays, _planets, Vector3.Zero);
+        _lagrange.Update(_planets, Vector3.Zero);
+        _meteors.Enabled = _showMeteors;
+        _meteors.Update(fxDt, _simDays, _planets);
+
         // Clear stale seek-feedback message after a few seconds.
         if (_seekFeedback.Length > 0 && GLFW.GetTime() > _seekFeedbackUntil)
             _seekFeedback = "";
@@ -498,6 +519,21 @@ public sealed class SolarSystemWindow : GameWindow
             return;
         }
 
+        // S12: Ctrl+B cycles eclipse / transit bookmarks. Handled before the bare B
+        // key (currently unbound) so a future binding doesn't fight with it.
+        if (e.Key == Keys.B && (e.Modifiers & KeyModifiers.Control) != 0)
+        {
+            var entry = _bookmarks.Next(_simDays);
+            if (entry is { } ev)
+            {
+                _simDays = Bookmarks.ToSimDays(ev);
+                ClearAllTrails();
+                _seekFeedback = $"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}";
+                _seekFeedbackUntil = GLFW.GetTime() + 4.0;
+            }
+            return;
+        }
+
         switch (e.Key)
         {
             case Keys.Escape:
@@ -533,6 +569,29 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
             case Keys.R: ToggleRealScale(); break;
             case Keys.C: _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; break;
+
+            // S9–S11.
+            case Keys.P: _showProbes = !_showProbes; break;
+            case Keys.G: _showLagrange = !_showLagrange; break;
+            case Keys.M:
+                _showMeteors = !_showMeteors;
+                if (!_showMeteors)
+                {
+                    _seekFeedback = "Meteor showers: OFF";
+                }
+                else if (_meteors.ActiveShowerName.Length > 0)
+                {
+                    _seekFeedback = $"Meteor showers: ON — {_meteors.ActiveShowerName} active";
+                }
+                else
+                {
+                    var next = _meteors.NextPeak(_simDays);
+                    _seekFeedback = next is { } n
+                        ? $"Meteor showers: ON — next: {n.Name} in {n.DaysUntil} day{(n.DaysUntil == 1 ? "" : "s")}"
+                        : "Meteor showers: ON";
+                }
+                _seekFeedbackUntil = GLFW.GetTime() + 3.0;
+                break;
             case Keys.Y:
                 _lightTime = !_lightTime;
                 _seekFeedback = _lightTime
@@ -641,6 +700,12 @@ public sealed class SolarSystemWindow : GameWindow
         _solarWind.Draw(_camera);
         _solarFlares.Draw(_camera);
 
+        // S9–S11: probe crosses, Lagrange-point diamonds, meteor streaks. All use
+        // additive blending so they brighten the underlying scene without occluding it.
+        if (_showProbes) _probes.Draw(_camera);
+        if (_showLagrange) { _lagrange.Enabled = true; _lagrange.Draw(_camera); }
+        if (_showMeteors) _meteors.Draw(_camera);
+
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, visible);
 
         // Apply HDR bright-pass + Gaussian blur + additive composite to the
@@ -672,6 +737,24 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawLabel(_font, _camera,
                 _comet.Body.Position + new Vector3(0, _comet.Body.VisualRadius + 0.5f, 0),
                 _comet.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
+        }
+
+        // S9: probe labels (always drawn when probes are visible — they're the
+        // whole point of the feature).
+        if (_showProbes)
+        {
+            foreach (var pr in _probes.All)
+            {
+                if (!pr.Active) continue;
+                _renderer.DrawLabel(_font, _camera, pr.Position, pr.Name, 11, pr.Color);
+            }
+        }
+
+        // S10: Lagrange labels.
+        if (_showLagrange)
+        {
+            foreach (var m in _lagrange.Markers)
+                _renderer.DrawLabel(_font, _camera, m.Pos, m.Label, 10, m.Color);
         }
 
         // Constellation names — anchored to the camera so they sit at infinity on
@@ -715,6 +798,10 @@ public sealed class SolarSystemWindow : GameWindow
             "A           toggle axes\n" +
             "D           toggle dwarf planets\n" +
             "C           toggle constellations\n" +
+            "P           toggle probes\n" +
+            "G           toggle Lagrange points\n" +
+            "M           toggle meteor showers\n" +
+            "Ctrl+B      cycle eclipse / transit\n" +
             "J           jump to date / ±days\n" +
             "Ctrl+F      search bodies\n" +
             "F12         screenshot\n" +
@@ -759,6 +846,14 @@ public sealed class SolarSystemWindow : GameWindow
         float lineH = infoSize * (_font.LineHeight / _font.FontPixelSize);
         float panelY = _renderer.FramebufferSize.Y - 12f - lineCount * lineH;
         _renderer.DrawText(_font, info, 12, panelY, infoSize, white);
+
+        // S11: live banner when a meteor shower is currently in its activity window.
+        if (_showMeteors && _meteors.ActiveShowerName.Length > 0)
+        {
+            _renderer.DrawText(_font, $"☄ {_meteors.ActiveShowerName} active",
+                _renderer.FramebufferSize.X - 260f, _renderer.FramebufferSize.Y - 30f, 13f,
+                new Vector4(1f, 0.85f, 0.6f, 0.95f));
+        }
 
         // Date-seek prompt: top-center modal overlay while active. Drawn after every
         // other UI so it can't be occluded.
@@ -1201,6 +1296,9 @@ public sealed class SolarSystemWindow : GameWindow
         _belt.Dispose();
         _comet.Dispose();
         _constellations.Dispose();
+        _probes.Dispose();
+        _lagrange.Dispose();
+        _meteors.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
@@ -1338,6 +1436,10 @@ public sealed class SolarSystemWindow : GameWindow
         public bool SolarFlaresEnabled { get; set; } = true;
         public bool RealScale { get; set; }
         public bool LightTime { get; set; }
+        // S9–S11 toggles.
+        public bool ShowProbes { get; set; } = true;
+        public bool ShowLagrange { get; set; }
+        public bool ShowMeteors { get; set; } = true;
     }
 
     private void TryLoadPersistedState()
@@ -1374,6 +1476,10 @@ public sealed class SolarSystemWindow : GameWindow
             _solarFlares.Enabled = s.SolarFlaresEnabled;
             _lightTime = s.LightTime;
 
+            _showProbes = s.ShowProbes;
+            _showLagrange = s.ShowLagrange;
+            _showMeteors = s.ShowMeteors;
+
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
         catch (Exception ex)
@@ -1409,6 +1515,9 @@ public sealed class SolarSystemWindow : GameWindow
                 SolarFlaresEnabled = _solarFlares.Enabled,
                 RealScale = OrbitalMechanics.RealScale,
                 LightTime = _lightTime,
+                ShowProbes = _showProbes,
+                ShowLagrange = _showLagrange,
+                ShowMeteors = _showMeteors,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
