@@ -1,0 +1,150 @@
+{
+  "_comment": "J2000 Keplerian elements + visual scaling info. Loaded by Planet.CreateAll() / Planet.CreateDwarfPlanets() at runtime so new bodies can be added without recompiling. argPerihelionDeg is ω (NOT longitude of perihelion ϖ), meanLongitudeDeg is L = M + ω + Ω. If this file is missing or fails to parse, the program falls back to the built-in defaults.",
+  "majors": [
+    {
+      "name": "Mercury",
+      "semiMajorAxisAU": 0.38709927, "eccentricity": 0.20563593,
+      "inclinationDeg": 7.00497902, "longAscNodeDeg": 48.33076593,
+      "argPerihelionDeg": 29.12703035, "meanLongitudeDeg": 252.25032350,
+      "orbitalPeriodYears": 0.2408467,
+      "visualRadius": 0.7, "realRadiusKm": 2439.7,
+      "color": [0.65, 0.62, 0.58],
+      "textureFile": "8k_mercury.jpg",
+      "axisTiltDeg": 0.034, "rotationPeriodHours": 1407.6
+    },
+    {
+      "name": "Venus",
+      "semiMajorAxisAU": 0.72333566, "eccentricity": 0.00677672,
+      "inclinationDeg": 3.39467605, "longAscNodeDeg": 76.67984255,
+      "argPerihelionDeg": 54.92262463, "meanLongitudeDeg": 181.97909950,
+      "orbitalPeriodYears": 0.61519726,
+      "visualRadius": 1.3, "realRadiusKm": 6051.8,
+      "color": [0.95, 0.78, 0.45],
+      "textureFile": "8k_venus_surface.jpg",
+      "axisTiltDeg": 177.36, "rotationPeriodHours": -5832.5
+    },
+    {
+      "name": "Earth",
+      "semiMajorAxisAU": 1.00000261, "eccentricity": 0.01671123,
+      "inclinationDeg": -0.00001531, "longAscNodeDeg": 0.0,
+      "argPerihelionDeg": 102.93768193, "meanLongitudeDeg": 100.46457166,
+      "orbitalPeriodYears": 1.0000174,
+      "visualRadius": 1.5, "realRadiusKm": 6371.0,
+      "color": [0.25, 0.55, 0.95],
+      "textureFile": "8k_earth_daymap.jpg",
+      "axisTiltDeg": 23.44, "rotationPeriodHours": 23.9345
+    },
+    {
+      "name": "Mars",
+      "semiMajorAxisAU": 1.52371034, "eccentricity": 0.09339410,
+      "inclinationDeg": 1.84969142, "longAscNodeDeg": 49.55953891,
+      "argPerihelionDeg": 286.50210865, "meanLongitudeDeg": -4.55343205,
+      "orbitalPeriodYears": 1.8808476,
+      "visualRadius": 1.1, "realRadiusKm": 3389.5,
+      "color": [0.85, 0.40, 0.25],
+      "textureFile": "8k_mars.jpg",
+      "axisTiltDeg": 25.19, "rotationPeriodHours": 24.6229
+    },
+    {
+      "name": "Jupiter",
+      "semiMajorAxisAU": 5.20288700, "eccentricity": 0.04838624,
+      "inclinationDeg": 1.30439695, "longAscNodeDeg": 100.47390909,
+      "argPerihelionDeg": 273.86740658, "meanLongitudeDeg": 34.39644051,
+      "orbitalPeriodYears": 11.862615,
+      "visualRadius": 4.0, "realRadiusKm": 69911.0,
+      "color": [0.85, 0.72, 0.55],
+      "textureFile": "8k_jupiter.jpg",
+      "axisTiltDeg": 3.13, "rotationPeriodHours": 9.9250
+    },
+    {
+      "name": "Saturn",
+      "semiMajorAxisAU": 9.53667594, "eccentricity": 0.05386179,
+      "inclinationDeg": 2.48599187, "longAscNodeDeg": 113.66242448,
+      "argPerihelionDeg": 339.39163095, "meanLongitudeDeg": 49.95424423,
+      "orbitalPeriodYears": 29.447498,
+      "visualRadius": 3.4, "realRadiusKm": 58232.0,
+      "color": [0.93, 0.85, 0.62],
+      "textureFile": "8k_saturn.jpg",
+      "axisTiltDeg": 26.73, "rotationPeriodHours": 10.656
+    },
+    {
+      "name": "Uranus",
+      "semiMajorAxisAU": 19.18916464, "eccentricity": 0.04725744,
+      "inclinationDeg": 0.77263783, "longAscNodeDeg": 74.01692503,
+      "argPerihelionDeg": 96.99893202, "meanLongitudeDeg": 313.23810451,
+      "orbitalPeriodYears": 84.016846,
+      "visualRadius": 2.4, "realRadiusKm": 25362.0,
+      "color": [0.55, 0.85, 0.95],
+      "textureFile": "2k_uranus.jpg",
+      "axisTiltDeg": 97.77, "rotationPeriodHours": -17.24
+    },
+    {
+      "name": "Neptune",
+      "semiMajorAxisAU": 30.06992276, "eccentricity": 0.00859048,
+      "inclinationDeg": 1.77004347, "longAscNodeDeg": 131.78422574,
+      "argPerihelionDeg": 273.18715000, "meanLongitudeDeg": -55.12002969,
+      "orbitalPeriodYears": 164.79132,
+      "visualRadius": 2.3, "realRadiusKm": 24622.0,
+      "color": [0.30, 0.50, 0.95],
+      "textureFile": "2k_neptune.jpg",
+      "axisTiltDeg": 28.32, "rotationPeriodHours": 16.11
+    }
+  ],
+  "dwarfs": [
+    {
+      "name": "Ceres",
+      "semiMajorAxisAU": 2.7691652, "eccentricity": 0.0760091,
+      "inclinationDeg": 10.5934, "longAscNodeDeg": 80.3293,
+      "argPerihelionDeg": 73.5970, "meanLongitudeDeg": 441.5145,
+      "orbitalPeriodYears": 4.605,
+      "visualRadius": 0.3, "realRadiusKm": 469.7,
+      "color": [0.60, 0.55, 0.50],
+      "textureFile": "4k_ceres_fictional.jpg",
+      "axisTiltDeg": 4.0, "rotationPeriodHours": 9.074
+    },
+    {
+      "name": "Pluto",
+      "semiMajorAxisAU": 39.48211675, "eccentricity": 0.24882730,
+      "inclinationDeg": 17.14001206, "longAscNodeDeg": 110.30393684,
+      "argPerihelionDeg": 113.76497945, "meanLongitudeDeg": 238.92903833,
+      "orbitalPeriodYears": 248.00208,
+      "visualRadius": 0.6, "realRadiusKm": 1188.3,
+      "color": [0.78, 0.65, 0.50],
+      "textureFile": "2k_pluto.jpg",
+      "axisTiltDeg": 122.53, "rotationPeriodHours": -153.2928
+    },
+    {
+      "name": "Haumea",
+      "semiMajorAxisAU": 43.116, "eccentricity": 0.19501,
+      "inclinationDeg": 28.2137, "longAscNodeDeg": 121.79,
+      "argPerihelionDeg": 239.05, "meanLongitudeDeg": 566.50,
+      "orbitalPeriodYears": 283.12,
+      "visualRadius": 0.5, "realRadiusKm": 798.0,
+      "color": [0.90, 0.88, 0.85],
+      "textureFile": "4k_haumea_fictional.jpg",
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 3.9155
+    },
+    {
+      "name": "Makemake",
+      "semiMajorAxisAU": 45.430, "eccentricity": 0.16259,
+      "inclinationDeg": 29.0058, "longAscNodeDeg": 79.382,
+      "argPerihelionDeg": 295.154, "meanLongitudeDeg": 526.682,
+      "orbitalPeriodYears": 309.09,
+      "visualRadius": 0.5, "realRadiusKm": 715.0,
+      "color": [0.75, 0.55, 0.40],
+      "textureFile": "4k_makemake_fictional.jpg",
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 22.83
+    },
+    {
+      "name": "Eris",
+      "semiMajorAxisAU": 68.146, "eccentricity": 0.43607,
+      "inclinationDeg": 43.7405, "longAscNodeDeg": 36.0387,
+      "argPerihelionDeg": 151.6394, "meanLongitudeDeg": 392.4025,
+      "orbitalPeriodYears": 558.04,
+      "visualRadius": 0.6, "realRadiusKm": 1163.0,
+      "color": [0.85, 0.85, 0.82],
+      "textureFile": "4k_eris_fictional.jpg",
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 25.9
+    }
+  ]
+}

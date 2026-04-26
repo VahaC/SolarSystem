@@ -1,4 +1,7 @@
-﻿using OpenTK.Mathematics;
+﻿using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using OpenTK.Mathematics;
 
 namespace SolarSystem;
 
@@ -70,6 +73,13 @@ public sealed class Planet
 
     // Built-in J2000 elements (NASA JPL approximations).
     public static Planet[] CreateAll()
+    {
+        if (TryLoadFromJson(out var majors, out _) && majors.Length > 0)
+            return majors;
+        return CreateAllBuiltIn();
+    }
+
+    private static Planet[] CreateAllBuiltIn()
     {
         return new[]
         {
@@ -190,6 +200,13 @@ public sealed class Planet
     /// </summary>
     public static Planet[] CreateDwarfPlanets()
     {
+        if (TryLoadFromJson(out _, out var dwarfs) && dwarfs.Length > 0)
+            return dwarfs;
+        return CreateDwarfPlanetsBuiltIn();
+    }
+
+    private static Planet[] CreateDwarfPlanetsBuiltIn()
+    {
         return new[]
         {
             // Ceres — main-belt, in between Mars and Jupiter.
@@ -264,5 +281,100 @@ public sealed class Planet
                 AxisTiltDeg = 0.0f, RotationPeriodHours = 25.9,
             },
         };
+    }
+
+    // ---- A3: data-driven loading from data/planets.json ----------------------------
+    // Cached so we only hit the disk + parser once even though CreateAll and
+    // CreateDwarfPlanets call into the same file.
+    private static (Planet[] majors, Planet[] dwarfs)? _jsonCache;
+    private static bool _jsonLoadAttempted;
+
+    private static bool TryLoadFromJson(out Planet[] majors, out Planet[] dwarfs)
+    {
+        if (_jsonCache is { } cached) { majors = cached.majors; dwarfs = cached.dwarfs; return true; }
+        if (_jsonLoadAttempted) { majors = Array.Empty<Planet>(); dwarfs = Array.Empty<Planet>(); return false; }
+        _jsonLoadAttempted = true;
+
+        string path = Path.Combine(AppContext.BaseDirectory, "data", "planets.json");
+        if (!File.Exists(path))
+        {
+            Debug.WriteLine($"[planets.json] not found at '{path}', using built-in defaults");
+            majors = Array.Empty<Planet>(); dwarfs = Array.Empty<Planet>();
+            return false;
+        }
+        try
+        {
+            using var fs = File.OpenRead(path);
+            var doc = JsonSerializer.Deserialize<PlanetsFile>(fs, _jsonOptions)
+                      ?? throw new InvalidDataException("planets.json deserialised as null");
+            var ms = (doc.Majors ?? Array.Empty<PlanetDto>()).Select(FromDto).ToArray();
+            var ds = (doc.Dwarfs ?? Array.Empty<PlanetDto>()).Select(FromDto).ToArray();
+            _jsonCache = (ms, ds);
+            Debug.WriteLine($"[planets.json] loaded {ms.Length} majors + {ds.Length} dwarfs from '{path}'");
+            majors = ms; dwarfs = ds;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[planets.json] parse failed ({ex.GetType().Name}: {ex.Message}) — falling back to built-in defaults");
+            majors = Array.Empty<Planet>(); dwarfs = Array.Empty<Planet>();
+            return false;
+        }
+    }
+
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
+    private static Planet FromDto(PlanetDto d)
+    {
+        var c = d.Color ?? new[] { 1f, 1f, 1f };
+        return new Planet
+        {
+            Name = d.Name ?? "?",
+            SemiMajorAxisAU = d.SemiMajorAxisAU,
+            Eccentricity = d.Eccentricity,
+            InclinationDeg = d.InclinationDeg,
+            LongAscNodeDeg = d.LongAscNodeDeg,
+            ArgPerihelionDeg = d.ArgPerihelionDeg,
+            MeanLongitudeDeg = d.MeanLongitudeDeg,
+            OrbitalPeriodYears = d.OrbitalPeriodYears,
+            VisualRadius = d.VisualRadius,
+            RealRadiusKm = d.RealRadiusKm,
+            ProceduralColor = new Vector3(
+                c.Length > 0 ? c[0] : 1f,
+                c.Length > 1 ? c[1] : 1f,
+                c.Length > 2 ? c[2] : 1f),
+            TextureFile = d.TextureFile ?? "",
+            AxisTiltDeg = d.AxisTiltDeg,
+            RotationPeriodHours = d.RotationPeriodHours,
+        };
+    }
+
+    private sealed class PlanetsFile
+    {
+        [JsonPropertyName("majors")] public PlanetDto[]? Majors { get; set; }
+        [JsonPropertyName("dwarfs")] public PlanetDto[]? Dwarfs { get; set; }
+    }
+
+    private sealed class PlanetDto
+    {
+        public string? Name { get; set; }
+        public double SemiMajorAxisAU { get; set; }
+        public double Eccentricity { get; set; }
+        public double InclinationDeg { get; set; }
+        public double LongAscNodeDeg { get; set; }
+        public double ArgPerihelionDeg { get; set; }
+        public double MeanLongitudeDeg { get; set; }
+        public double OrbitalPeriodYears { get; set; }
+        public float VisualRadius { get; set; }
+        public double RealRadiusKm { get; set; }
+        public float[]? Color { get; set; }
+        public string? TextureFile { get; set; }
+        public float AxisTiltDeg { get; set; }
+        public double RotationPeriodHours { get; set; }
     }
 }

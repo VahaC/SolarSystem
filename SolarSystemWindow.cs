@@ -31,6 +31,7 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly SolarFlares _solarFlares = new();
     private readonly AsteroidBelt _belt = new();
     private readonly Comet _comet = new();
+    private readonly Constellations _constellations = new();
     private BitmapFont _font = null!;
     /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
     /// are the IAU dwarf planets appended by <see cref="Planet.CreateDwarfPlanets"/>.
@@ -72,6 +73,7 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showLabels = true;
     private bool _showTrails = true;
     private bool _showDwarfs = true;
+    private bool _showConstellations;
     private int _focusIndex = -1;     // -1 = sun, 0..7 = planet
     private int _selectedIndex = -2;  // -2 = none, -1 = sun, 0..7 = planet
 
@@ -101,6 +103,7 @@ public sealed class SolarSystemWindow : GameWindow
         _solarFlares.Initialize();
         _belt.Initialize();
         _comet.Initialize();
+        _constellations.Initialize();
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
@@ -316,7 +319,7 @@ public sealed class SolarSystemWindow : GameWindow
         string speedStr = _paused
             ? "PAUSED"
             : $"{(_daysPerSecond < 0 ? "◀ " : "")}x{Math.Abs(_daysPerSecond):0.##} days/s";
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [T] trails  [L] labels  [W] wind  [F] flares  [R] scale  [D] dwarfs";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [T] trails  [L] labels  [W] wind  [F] flares  [R] scale  [D] dwarfs  [C] constellations";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -383,6 +386,7 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
             case Keys.R: ToggleRealScale(); break;
+            case Keys.C: _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; break;
 
             case Keys.KeyPadAdd:
             case Keys.Equal:
@@ -441,6 +445,7 @@ public sealed class SolarSystemWindow : GameWindow
         Planet[] visible = _showDwarfs ? _planets : _majorPlanets;
 
         _renderer.DrawStars(_camera);
+        if (_showConstellations) _constellations.Draw(_camera);
         if (_showOrbits)
         {
             _renderer.DrawOrbits(_camera, visible);
@@ -492,6 +497,17 @@ public sealed class SolarSystemWindow : GameWindow
                 _comet.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
         }
 
+        // Constellation names — anchored to the camera so they sit at infinity on
+        // the celestial sphere along with the line figures.
+        if (_showConstellations)
+        {
+            var camPos = _camera.Eye;
+            var col = new Vector4(0.65f, 0.8f, 1f, 0.75f);
+            float r = MathF.Max(_camera.Distance, 50f) * 4f;
+            foreach (var c in _constellations.Entries)
+                _renderer.DrawLabel(_font, _camera, camPos + c.LabelDir * r, c.Name, 12, col);
+        }
+
         // UI overlay
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
         var white = new Vector4(1f, 1f, 1f, 0.95f);
@@ -521,6 +537,7 @@ public sealed class SolarSystemWindow : GameWindow
             "T           toggle trails\n" +
             "A           toggle axes\n" +
             "D           toggle dwarf planets\n" +
+            "C           toggle constellations\n" +
             "J           jump to date / ±days\n" +
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
@@ -873,6 +890,7 @@ public sealed class SolarSystemWindow : GameWindow
         _solarFlares.Dispose();
         _belt.Dispose();
         _comet.Dispose();
+        _constellations.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();

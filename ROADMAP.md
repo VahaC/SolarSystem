@@ -36,7 +36,7 @@ Priorities are subjective — anything here is fair game, in any order.
 | S5 | Date seek | ✅ Done. `J` opens a top-of-screen prompt; type `YYYY-MM-DD` (any culture-invariant `DateTime.TryParse` format) or a signed delta like `+30` / `-365` and press Enter. `Esc` cancels. After a jump trails are cleared so they don’t draw a stale arc across the new epoch. |
 | S6 | Major moons | ✅ Done. New `Moon` wraps a `Planet` body with `(hostIndex, orbitRadiusKm/artistic, periodDays, inclinationDeg, phaseDeg)`; `SolarSystemWindow` updates each moon's position per-frame as `host.Position + R(angle)` (same circular-orbit pattern as Earth's Moon, with per-moon phase offsets so the Galileans aren't stacked). Bodies modelled: Io, Europa, Ganymede, Callisto (host = Jupiter) + Titan (host = Saturn). Real-scale mode swaps in the published km orbit radii via `OrbitalMechanics.KmToWorldRealScale`. |
 | S7 | Dwarf planets | ✅ Done. `Planet.CreateDwarfPlanets()` returns Ceres, Pluto, Haumea, Makemake, Eris with full J2000 Keplerian elements; `SolarSystemWindow` appends them after Neptune so they automatically inherit the orbit-line, trail, picking and info-panel pipelines. Numeric focus shortcuts (`1`–`8`) stay bound to the major planets — dwarfs are reachable via click / double-click. |
-| S8 | Constellation overlay | Optional toggle that draws constellation lines and names from a JSON data file. |
+| S8 | Constellation overlay | ✅ Done. `Constellations` loads RA/Dec line endpoints from `data/constellations.json` and renders them skybox-style (translation stripped from the view matrix + `gl_Position.z = w` so the figures sit on the celestial sphere at infinity, independent of camera position or scale mode). Names are drawn via the existing `BitmapFont` overlay anchored to `camera.Eye + dir * R`. Toggle with `C`. Ships with Orion, Ursa Major, Cassiopeia, Cygnus, Lyra, Crux, Scorpius, Leo. |
 
 ## 🛠 Quality-of-life
 
@@ -65,7 +65,7 @@ Priorities are subjective — anything here is fair game, in any order.
 |---|---|---|
 | A1 | Cross-platform font fallback | `BitmapFont` is currently `[SupportedOSPlatform("windows")]` (GDI+). Add a SkiaSharp / FreeType backend so it runs on Linux/macOS. |
 | A2 | Move shader source to `.glsl` files | Currently embedded as C# strings; move to `Resources/Shaders/*.glsl` with `EmbeddedResource` or `<Content>` items. |
-| A3 | Move planet data to `planets.json` | Same J2000 elements, but data-driven so users can add bodies without recompiling. |
+| A3 | Move planet data to `planets.json` | ✅ Done. `Planet.CreateAll()` / `Planet.CreateDwarfPlanets()` first try `data/planets.json` (System.Text.Json, comments + trailing commas tolerated) and fall back to the original built-in tables if the file is missing or fails to parse. Same J2000 elements as before, but new bodies (or tweaks to existing ones) can be added without recompiling. |
 | A4 | Replace point-sprite particles with instanced quads | Better cross-driver behaviour; current `gl_PointSize` is capped at small values on some GPUs. |
 | A5 | Frame-time-independent particle systems | Use sub-stepped integration so very high `_daysPerSecond` doesn't desync particles. |
 

@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <None Include="textures\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('textures')" />
+    <None Include="data\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('data')" />
     <None Include="solar-system-logo.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('solar-system-logo.png')" />
   </ItemGroup>
 
