@@ -32,6 +32,19 @@ public sealed class Renderer : IDisposable
     private int _ringTexture;
     private int _starsTexture;
 
+    // HDR + Bloom post-processing.
+    // The 3D scene is rendered to a half-float HDR target so bright pixels (the Sun,
+    // flares) can exceed 1.0; a bright-pass + separable Gaussian blur + additive
+    // composite then brings those highlights back down to the default framebuffer
+    // as a glow halo.
+    private int _hdrFbo, _hdrColor, _hdrDepth;
+    private int _bloomFboA, _bloomFboB, _bloomTexA, _bloomTexB;
+    private int _ppWidth, _ppHeight;
+    private ShaderProgram _brightShader = null!;
+    private ShaderProgram _blurShader = null!;
+    private ShaderProgram _compositeShader = null!;
+    public bool BloomEnabled { get; set; } = true;
+
     public Vector2i FramebufferSize { get; set; } = new(1280, 800);
 
     public void Initialize()
@@ -293,6 +306,141 @@ public sealed class Renderer : IDisposable
         GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
     }
 
+    /// <summary>Begin rendering the 3D scene into the HDR offscreen framebuffer.
+    /// Must be paired with <see cref="EndSceneAndApplyBloom"/> which composites the
+    /// result (plus a bloom halo on bright pixels) onto the default framebuffer.</summary>
+    public void BeginScene()
+    {
+        if (!BloomEnabled) { Clear(); return; }
+        EnsurePostProcessTargets();
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, _hdrFbo);
+        GL.Viewport(0, 0, FramebufferSize.X, FramebufferSize.Y);
+        GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+    }
+
+    /// <summary>Bright-pass extract ? 6-pass separable Gaussian blur ? additive
+    /// composite of HDR scene + blurred bloom into the default framebuffer.
+    /// After this call the default framebuffer is bound and ready for 2D overlays.</summary>
+    public void EndSceneAndApplyBloom()
+    {
+        if (!BloomEnabled) return;
+
+        int bw = Math.Max(1, _ppWidth / 2);
+        int bh = Math.Max(1, _ppHeight / 2);
+
+        GL.Disable(EnableCap.DepthTest);
+        GL.Disable(EnableCap.CullFace);
+        GL.Disable(EnableCap.Blend);
+        GL.DepthMask(false);
+
+        // 1. Bright-pass: extract luminance above threshold into _bloomTexA at half res.
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, _bloomFboA);
+        GL.Viewport(0, 0, bw, bh);
+        _brightShader.Use();
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, _hdrColor);
+        _brightShader.SetInt("uTex", 0);
+        _brightShader.SetFloat("uThreshold", 0.9f);
+        GL.BindVertexArray(_quadVao);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+
+        // 2. Separable Gaussian blur: ping-pong horizontal/vertical N times.
+        _blurShader.Use();
+        _blurShader.SetInt("uTex", 0);
+        const int blurPasses = 6;
+        bool horizontal = true;
+        int srcTex = _bloomTexA;
+        for (int i = 0; i < blurPasses; i++)
+        {
+            int dstFbo = horizontal ? _bloomFboB : _bloomFboA;
+            int dstTex = horizontal ? _bloomTexB : _bloomTexA;
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, dstFbo);
+            GL.Viewport(0, 0, bw, bh);
+            _blurShader.SetVector2("uTexel",
+                horizontal ? new Vector2(1f / bw, 0f) : new Vector2(0f, 1f / bh));
+            GL.BindTexture(TextureTarget.Texture2D, srcTex);
+            GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+            srcTex = dstTex;
+            horizontal = !horizontal;
+        }
+        int finalBloom = srcTex;
+
+        // 3. Composite HDR scene + blurred bloom into the default framebuffer.
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        GL.Viewport(0, 0, _ppWidth, _ppHeight);
+        GL.Clear(ClearBufferMask.ColorBufferBit);
+        _compositeShader.Use();
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, _hdrColor);
+        _compositeShader.SetInt("uScene", 0);
+        GL.ActiveTexture(TextureUnit.Texture1);
+        GL.BindTexture(TextureTarget.Texture2D, finalBloom);
+        _compositeShader.SetInt("uBloom", 1);
+        _compositeShader.SetFloat("uBloomStrength", 1.1f);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        GL.BindVertexArray(0);
+        GL.ActiveTexture(TextureUnit.Texture0);
+
+        GL.Enable(EnableCap.CullFace);
+        GL.Enable(EnableCap.DepthTest);
+        GL.DepthMask(true);
+    }
+
+    private void EnsurePostProcessTargets()
+    {
+        if (_hdrFbo != 0 && _ppWidth == FramebufferSize.X && _ppHeight == FramebufferSize.Y)
+            return;
+
+        _ppWidth = Math.Max(1, FramebufferSize.X);
+        _ppHeight = Math.Max(1, FramebufferSize.Y);
+        int bw = Math.Max(1, _ppWidth / 2);
+        int bh = Math.Max(1, _ppHeight / 2);
+
+        if (_hdrFbo == 0) _hdrFbo = GL.GenFramebuffer();
+        if (_hdrColor == 0) _hdrColor = GL.GenTexture();
+        if (_hdrDepth == 0) _hdrDepth = GL.GenRenderbuffer();
+
+        GL.BindTexture(TextureTarget.Texture2D, _hdrColor);
+        GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba16f,
+            _ppWidth, _ppHeight, 0, PixelFormat.Rgba, PixelType.HalfFloat, IntPtr.Zero);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+
+        GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _hdrDepth);
+        GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
+            RenderbufferStorage.DepthComponent24, _ppWidth, _ppHeight);
+
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, _hdrFbo);
+        GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, _hdrColor, 0);
+        GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment,
+            RenderbufferTarget.Renderbuffer, _hdrDepth);
+
+        if (_bloomFboA == 0) { _bloomFboA = GL.GenFramebuffer(); _bloomTexA = GL.GenTexture(); }
+        if (_bloomFboB == 0) { _bloomFboB = GL.GenFramebuffer(); _bloomTexB = GL.GenTexture(); }
+
+        InitBloomTarget(_bloomFboA, _bloomTexA, bw, bh);
+        InitBloomTarget(_bloomFboB, _bloomTexB, bw, bh);
+
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+    }
+
+    private static void InitBloomTarget(int fbo, int tex, int w, int h)
+    {
+        GL.BindTexture(TextureTarget.Texture2D, tex);
+        GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba16f,
+            w, h, 0, PixelFormat.Rgba, PixelType.HalfFloat, IntPtr.Zero);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+        GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, tex, 0);
+    }
+
     public void DrawStars(Camera cam)
     {
         // Fullscreen-quad sky. Per-pixel we reconstruct the world-space view direction
@@ -507,6 +655,9 @@ public sealed class Renderer : IDisposable
         _glowShader = new ShaderProgram(GlowVS, GlowFS);
         _textShader = new ShaderProgram(TextVS, TextFS);
         _starsShader = new ShaderProgram(SkyVS, SkyFS);
+        _brightShader = new ShaderProgram(PostVS, BrightFS);
+        _blurShader = new ShaderProgram(PostVS, BlurFS);
+        _compositeShader = new ShaderProgram(PostVS, CompositeFS);
     }
 
     private const string PlanetVS = @"#version 330 core
@@ -554,7 +705,9 @@ out vec4 fragColor;
 uniform sampler2D uTex; uniform vec3 uColor;
 void main(){
     vec3 base = texture(uTex, vUv).rgb;
-    fragColor = vec4(base * uColor * 1.4, 1.0);
+    // HDR output: deliberately exceeds 1.0 so the bright-pass post-process
+    // picks the Sun up as a bloom source.
+    fragColor = vec4(base * uColor * 2.6, 1.0);
 }";
 
     private const string OrbitVS = @"#version 330 core
@@ -628,7 +781,8 @@ in vec2 vUv; out vec4 fragColor; uniform vec3 uColor;
 void main(){
     float d = length(vUv);
     float a = pow(max(0.0, 1.0 - d), 2.5);
-    fragColor = vec4(uColor * a, a);
+    // HDR output: pushed past 1.0 in the core so the bloom pass ignites a halo.
+    fragColor = vec4(uColor * a * 2.0, a);
 }";
 
     private const string TextVS = @"#version 330 core
@@ -645,6 +799,57 @@ void main(){
     fragColor = vec4(uColor.rgb, uColor.a * a);
 }";
 
+    // ---- Post-processing shaders (HDR + Bloom) ----
+    // Shared fullscreen-quad VS for all three passes. _quadVao positions are NDC (-1..1).
+    private const string PostVS = @"#version 330 core
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUv;
+out vec2 vUv;
+void main(){ vUv = aUv; gl_Position = vec4(aPos, 0.0, 1.0); }";
+
+    private const string BrightFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor;
+uniform sampler2D uTex; uniform float uThreshold;
+void main(){
+    vec3 c = texture(uTex, vUv).rgb;
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float k = max(l - uThreshold, 0.0) / max(l, 1e-4);
+    fragColor = vec4(c * k, 1.0);
+}";
+
+    // 9-tap separable Gaussian (sigma ~ 2.0). Direction selected via uTexel.
+    private const string BlurFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor;
+uniform sampler2D uTex; uniform vec2 uTexel;
+void main(){
+    float w0 = 0.227027;
+    float w1 = 0.1945946;
+    float w2 = 0.1216216;
+    float w3 = 0.054054;
+    float w4 = 0.016216;
+    vec3 c = texture(uTex, vUv).rgb * w0;
+    c += texture(uTex, vUv + uTexel * 1.0).rgb * w1;
+    c += texture(uTex, vUv - uTexel * 1.0).rgb * w1;
+    c += texture(uTex, vUv + uTexel * 2.0).rgb * w2;
+    c += texture(uTex, vUv - uTexel * 2.0).rgb * w2;
+    c += texture(uTex, vUv + uTexel * 3.0).rgb * w3;
+    c += texture(uTex, vUv - uTexel * 3.0).rgb * w3;
+    c += texture(uTex, vUv + uTexel * 4.0).rgb * w4;
+    c += texture(uTex, vUv - uTexel * 4.0).rgb * w4;
+    fragColor = vec4(c, 1.0);
+}";
+
+    private const string CompositeFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomStrength;
+void main(){
+    vec3 hdr   = texture(uScene, vUv).rgb;
+    vec3 bloom = texture(uBloom, vUv).rgb;
+    fragColor = vec4(hdr + bloom * uBloomStrength, 1.0);
+}";
+
     public void Dispose()
     {
         _planetShader?.Dispose();
@@ -655,6 +860,9 @@ void main(){
         _glowShader?.Dispose();
         _textShader?.Dispose();
         _starsShader?.Dispose();
+        _brightShader?.Dispose();
+        _blurShader?.Dispose();
+        _compositeShader?.Dispose();
         GL.DeleteVertexArray(_sphereVao); GL.DeleteBuffer(_sphereVbo); GL.DeleteBuffer(_sphereEbo);
         GL.DeleteVertexArray(_orbitVao); GL.DeleteBuffer(_orbitVbo);
         GL.DeleteVertexArray(_starVao); GL.DeleteBuffer(_starVbo);
@@ -665,5 +873,12 @@ void main(){
         GL.DeleteTexture(_sunTexture);
         GL.DeleteTexture(_ringTexture);
         GL.DeleteTexture(_starsTexture);
+        if (_hdrFbo != 0) GL.DeleteFramebuffer(_hdrFbo);
+        if (_hdrColor != 0) GL.DeleteTexture(_hdrColor);
+        if (_hdrDepth != 0) GL.DeleteRenderbuffer(_hdrDepth);
+        if (_bloomFboA != 0) GL.DeleteFramebuffer(_bloomFboA);
+        if (_bloomFboB != 0) GL.DeleteFramebuffer(_bloomFboB);
+        if (_bloomTexA != 0) GL.DeleteTexture(_bloomTexA);
+        if (_bloomTexB != 0) GL.DeleteTexture(_bloomTexB);
     }
 }

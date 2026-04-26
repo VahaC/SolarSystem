@@ -7,7 +7,7 @@ Priorities are subjective — anything here is fair game, in any order.
 
 ## 🥇 Top picks (highest wow-per-line-of-code)
 
-1. **Bloom / HDR glow on Sun & flares** — fullscreen post-process: extract bright pixels → Gaussian blur → additive composite. Will instantly raise the perceived production value.
+1. ~~**Bloom / HDR glow on Sun & flares** — fullscreen post-process: extract bright pixels → Gaussian blur → additive composite. Will instantly raise the perceived production value.~~ ✅ **Done** — implemented in `Renderer` as an HDR (RGBA16F) offscreen target + bright-pass + 6-pass separable Gaussian blur + additive composite (`BeginScene` / `EndSceneAndApplyBloom`).
 2. **Smooth focus transition + planet trails** — lerp `Camera.Target` and `Distance` over ~0.5 s instead of snapping; render a fading line strip behind each planet for the last *N* positions. Looks "cinematic" especially at high simulation speed.
 3. **Logarithmic depth + minimum screen-size dots** — make the real-scale (R) mode actually usable: log-depth shader (`gl_FragDepth = log2(1+w)/log2(1+far)`) eliminates z-fighting at huge near/far ratios, and a per-body screen-space minimum size (e.g. ≥ 2 px) keeps planets visible even from astronomical distances.
 
@@ -17,7 +17,7 @@ Priorities are subjective — anything here is fair game, in any order.
 
 | # | Feature | Notes |
 |---|---|---|
-| V1 | Bloom / HDR glow on Sun & particles | Fullscreen FBO + bright-pass + Gaussian blur + add. |
+| V1 | Bloom / HDR glow on Sun & particles | ✅ Implemented (RGBA16F FBO + bright-pass + separable Gaussian + additive composite). |
 | V2 | Atmospheric rim-light (Earth, Venus, Jupiter, Neptune) | Fresnel `pow(1-dot(N,V), 3)` tinted by atmosphere colour in planet shader. |
 | V3 | Earth cloud layer | Second alpha-blended sphere using `8k_earth_clouds.jpg`, slowly counter-rotating. |
 | V4 | Earth night-side city lights | `8k_earth_nightmap.jpg`; in shader: `mix(night, day, smoothstep(0, 0.2, NdotL))`. |

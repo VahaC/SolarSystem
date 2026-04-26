@@ -225,7 +225,7 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnRenderFrame(FrameEventArgs args)
     {
         base.OnRenderFrame(args);
-        _renderer.Clear();
+        _renderer.BeginScene();
 
         _renderer.DrawStars(_camera);
         if (_showOrbits) _renderer.DrawOrbits(_camera, _planets);
@@ -242,6 +242,11 @@ public sealed class SolarSystemWindow : GameWindow
         _solarFlares.Draw(_camera);
 
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, _planets);
+
+        // Apply HDR bright-pass + Gaussian blur + additive composite to the
+        // default framebuffer. All subsequent 2D overlays (labels, UI panels)
+        // are drawn directly to the default framebuffer and therefore unaffected.
+        _renderer.EndSceneAndApplyBloom();
 
         // Labels
         if (_showLabels)
