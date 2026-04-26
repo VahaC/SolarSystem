@@ -44,8 +44,18 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showOrbits = true;
     private bool _showAxes;
     private bool _showLabels = true;
+    private bool _showTrails = true;
     private int _focusIndex = -1;     // -1 = sun, 0..7 = planet
     private int _selectedIndex = -2;  // -2 = none, -1 = sun, 0..7 = planet
+
+    // Smooth focus transition state. When active the camera's Target / Distance are
+    // lerped from the captured start values toward the current focus over ~0.5s.
+    private bool _focusTransitioning;
+    private double _focusTransitionElapsed;
+    private const double FocusTransitionSeconds = 0.5;
+    private Vector3 _focusStartTarget;
+    private float _focusStartDistance;
+    private float _focusEndDistance;
 
     // Double-click detection (LMB).
     private double _lastClickTime = -10.0;
@@ -163,8 +173,37 @@ public sealed class SolarSystemWindow : GameWindow
             _moon.RotationAngleRad = (float)mAngle;
         }
 
-        if (_focusIndex >= 0)
+        // Trails: append the current world position to each planet's ring buffer once
+        // it has moved more than a planet-relative threshold. Skip while paused so the
+        // trail doesn't degenerate into a single multi-stamped point.
+        if (!_paused && _showTrails)
+        {
+            foreach (var p in _planets)
+            {
+                // A small absolute spacing keeps trails visible at slow sim speeds while
+                // the ring buffer still drops old samples once full at high speeds.
+                float spacing = OrbitalMechanics.RealScale ? 0.0005f : 0.01f;
+                p.TrailPush(p.Position, spacing);
+            }
+        }
+
+        // Smooth focus transition: lerp Target + Distance with a smoothstep ease.
+        // Tracking a moving planet during the lerp uses the body's CURRENT position as
+        // the dynamic end target so the camera arrives smoothly even as it orbits.
+        if (_focusTransitioning)
+        {
+            _focusTransitionElapsed += args.Time;
+            float t = (float)Math.Clamp(_focusTransitionElapsed / FocusTransitionSeconds, 0.0, 1.0);
+            float s = t * t * (3f - 2f * t); // smoothstep
+            Vector3 end = _focusIndex >= 0 ? _planets[_focusIndex].Position : Vector3.Zero;
+            _camera.Target = Vector3.Lerp(_focusStartTarget, end, s);
+            _camera.Distance = MathHelper.Lerp(_focusStartDistance, _focusEndDistance, s);
+            if (t >= 1f) _focusTransitioning = false;
+        }
+        else if (_focusIndex >= 0)
+        {
             _camera.Target = _planets[_focusIndex].Position;
+        }
 
         // Pause must also freeze the Sun's particle effects, otherwise the wind keeps
         // streaming and flares keep erupting while the planets are perfectly still.
@@ -178,7 +217,7 @@ public sealed class SolarSystemWindow : GameWindow
         string speedStr = _paused
             ? "PAUSED"
             : $"{(_daysPerSecond < 0 ? "◀ " : "")}x{Math.Abs(_daysPerSecond):0.##} days/s";
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind  [F] flares  [R] scale";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [T] trails  [L] labels  [W] wind  [F] flares  [R] scale";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -199,6 +238,7 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.O: _showOrbits = !_showOrbits; break;
             case Keys.A: _showAxes = !_showAxes; break;
             case Keys.L: _showLabels = !_showLabels; break;
+            case Keys.T: _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); break;
             case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
             case Keys.R: ToggleRealScale(); break;
@@ -224,19 +264,19 @@ public sealed class SolarSystemWindow : GameWindow
             // Reverse-time controls: ',' forces backward playback, '.' forces forward.
             // Magnitude is preserved so toggling direction doesn't change speed.
             case Keys.Comma:
+                if (_daysPerSecond > 0) ClearAllTrails();
                 _daysPerSecond = -Math.Abs(_daysPerSecond);
                 break;
             case Keys.Period:
+                if (_daysPerSecond < 0) ClearAllTrails();
                 _daysPerSecond = Math.Abs(_daysPerSecond);
                 break;
 
             case Keys.D0:
             case Keys.KeyPad0:
-                _focusIndex = -1;
                 _selectedIndex = -1;
-                _camera.ResetDefault();
-                _camera.Target = Vector3.Zero;
-                Debug.WriteLine("[focus] Sun (reset view)");
+                FocusOn(-1);
+                Debug.WriteLine("[focus] Sun");
                 break;
 
             case Keys.D1: case Keys.KeyPad1: FocusOn(0); _selectedIndex = 0; break;
@@ -257,6 +297,7 @@ public sealed class SolarSystemWindow : GameWindow
 
         _renderer.DrawStars(_camera);
         if (_showOrbits) _renderer.DrawOrbits(_camera, _planets);
+        if (_showTrails) _renderer.DrawTrails(_camera, _planets);
 
         _renderer.DrawSun(_camera, Vector3.Zero, SunRadius);
         foreach (var p in _planets)
@@ -316,6 +357,7 @@ public sealed class SolarSystemWindow : GameWindow
             "+ / -       sim speed\n" +
             "O           toggle orbits\n" +
             "L           toggle labels\n" +
+            "T           toggle trails\n" +
             "A           toggle axes\n" +
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
@@ -470,14 +512,13 @@ public sealed class SolarSystemWindow : GameWindow
         if (index == -1)
         {
             _focusIndex = -1;
-            _camera.Target = Vector3.Zero;
-            _camera.Distance = MathF.Max(_camera.Distance, SunRadius * 6f);
+            BeginFocusTransition(Vector3.Zero, MathF.Max(_camera.Distance, SunRadius * 6f));
         }
         else if (index >= 0 && index < _planets.Length)
         {
             _focusIndex = index;
             // Make sure the planet's world position is up-to-date for the *current* sim
-            // time so the camera snaps directly onto it without a one-frame lag.
+            // time so the transition aims at where the planet actually is right now.
             var p = _planets[index];
             p.HelioAU = OrbitalMechanics.HeliocentricPosition(p, _simDays);
             float s = OrbitalMechanics.OrbitWorldScale(p.SemiMajorAxisAU);
@@ -485,10 +526,27 @@ public sealed class SolarSystemWindow : GameWindow
                 (float)(p.HelioAU.X * s),
                 (float)(p.HelioAU.Y * s),
                 (float)(p.HelioAU.Z * s));
-            _camera.Target = p.Position;
-            _camera.Distance = MathF.Max(p.VisualRadius * 6f, _camera.MinDistance * 4f);
-            Debug.WriteLine($"[focus] {p.Name} target={p.Position} dist={_camera.Distance:0.##}");
+            float endDist = MathF.Max(p.VisualRadius * 6f, _camera.MinDistance * 4f);
+            BeginFocusTransition(p.Position, endDist);
+            Debug.WriteLine($"[focus] {p.Name} target={p.Position} dist={endDist:0.##}");
         }
+    }
+
+    /// <summary>Capture the current camera Target + Distance and kick off a smooth
+    /// 0.5 s lerp toward <paramref name="endTarget"/> / <paramref name="endDistance"/>.
+    /// During the transition the end-target is re-evaluated each frame against the
+    /// focused body's live position (handled in <see cref="OnUpdateFrame"/>).</summary>
+    private void BeginFocusTransition(Vector3 endTarget, float endDistance)
+    {
+        _focusStartTarget = _camera.Target;
+        _focusStartDistance = _camera.Distance;
+        _focusEndDistance = endDistance;
+        _focusTransitionElapsed = 0.0;
+        _focusTransitioning = true;
+        // endTarget is consumed implicitly via _focusIndex during the lerp; for the Sun
+        // case (_focusIndex = -1) we still need a fixed target, but Vector3.Zero is
+        // already the Sun's position so this just works.
+        _ = endTarget;
     }
 
     private void ToggleRealScale()
@@ -511,6 +569,9 @@ public sealed class SolarSystemWindow : GameWindow
         // Orbit lines were uploaded once with the old scale — rebuild them.
         _renderer.BuildOrbits(_planets);
 
+        // Trails accumulated in the old world scale would suddenly jump on toggle.
+        ClearAllTrails();
+
         // Real-scale planets are tiny (Earth ~0.002 units), so allow zooming in much
         // closer than the default. Compressed mode keeps a comfortable safety floor.
         _camera.MinDistance = OrbitalMechanics.RealScale ? 0.0005f : 2f;
@@ -528,6 +589,12 @@ public sealed class SolarSystemWindow : GameWindow
         }
 
         Debug.WriteLine($"[scale] {(OrbitalMechanics.RealScale ? "REAL (1 AU = 50 units)" : "compressed (a^0.45)")}");
+    }
+
+    private void ClearAllTrails()
+    {
+        if (_planets == null) return;
+        foreach (var p in _planets) p.TrailReset();
     }
 
     protected override void OnUnload()

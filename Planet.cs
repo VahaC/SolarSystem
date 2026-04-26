@@ -36,6 +36,38 @@ public sealed class Planet
     public int TextureId;
     public bool TextureFromFile;
 
+    // --- Trail (fading line strip of recent world-space positions) ---
+    /// <summary>Maximum number of samples retained for the trail line strip.</summary>
+    public const int TrailCapacity = 200;
+    /// <summary>Ring buffer of recent world positions. Slot at <see cref="TrailHead"/> is the
+    /// next write target; oldest sample (when full) is also at <see cref="TrailHead"/>.</summary>
+    public readonly Vector3[] Trail = new Vector3[TrailCapacity];
+    /// <summary>Number of valid samples currently in <see cref="Trail"/> (0..TrailCapacity).</summary>
+    public int TrailCount;
+    /// <summary>Index of the next slot to overwrite in <see cref="Trail"/>.</summary>
+    public int TrailHead;
+
+    public void TrailReset()
+    {
+        TrailCount = 0;
+        TrailHead = 0;
+    }
+
+    /// <summary>Append <paramref name="pos"/> to the trail if it is far enough from the
+    /// most recently stored sample (so the line strip doesn't degenerate when paused).</summary>
+    public void TrailPush(Vector3 pos, float minSpacing)
+    {
+        if (TrailCount > 0)
+        {
+            int last = (TrailHead - 1 + TrailCapacity) % TrailCapacity;
+            if ((pos - Trail[last]).LengthSquared < minSpacing * minSpacing)
+                return;
+        }
+        Trail[TrailHead] = pos;
+        TrailHead = (TrailHead + 1) % TrailCapacity;
+        if (TrailCount < TrailCapacity) TrailCount++;
+    }
+
     // Built-in J2000 elements (NASA JPL approximations).
     public static Planet[] CreateAll()
     {

@@ -15,6 +15,7 @@ public sealed class Renderer : IDisposable
     private int _quadVao, _quadVbo;
     private int _axisVao, _axisVbo;
     private int _textVao, _textVbo;
+    private int _trailVao, _trailVbo;
     private const int TextMaxQuads = 1024;
 
     // Shaders
@@ -26,6 +27,7 @@ public sealed class Renderer : IDisposable
     private ShaderProgram _glowShader = null!;
     private ShaderProgram _textShader = null!;
     private ShaderProgram _starsShader = null!;
+    private ShaderProgram _trailShader = null!;
 
     // Sun / Sky
     private int _sunTexture;
@@ -55,6 +57,7 @@ public sealed class Renderer : IDisposable
         BuildQuad();
         BuildAxisLine();
         BuildTextBuffer();
+        BuildTrailBuffer();
         CompileShaders();
 
         _sunTexture = TextureManager.TryLoadFile("8k_sun.jpg", out int sunTex)
@@ -300,6 +303,87 @@ public sealed class Renderer : IDisposable
         GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
         GL.EnableVertexAttribArray(1);
         GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), 2 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    // 4 floats per vertex: x, y, z, age (0 = oldest, 1 = newest). Sized for up to
+    // 16 bodies ? Planet.TrailCapacity samples to keep the upload to a single buffer.
+    private const int TrailMaxVertices = 16 * Planet.TrailCapacity;
+    private void BuildTrailBuffer()
+    {
+        _trailVao = GL.GenVertexArray();
+        _trailVbo = GL.GenBuffer();
+        GL.BindVertexArray(_trailVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _trailVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, TrailMaxVertices * 4 * sizeof(float),
+            IntPtr.Zero, BufferUsageHint.DynamicDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
+        GL.EnableVertexAttribArray(1);
+        GL.VertexAttribPointer(1, 1, VertexAttribPointerType.Float, false, 4 * sizeof(float), 3 * sizeof(float));
+        GL.BindVertexArray(0);
+    }
+
+    /// <summary>Draws each planet's recorded trail as a fading line strip from the oldest
+    /// sample (alpha 0) to the most recent (full alpha). Samples are uploaded fresh each
+    /// frame from the planet's ring buffer.</summary>
+    public void DrawTrails(Camera cam, Planet[] planets)
+    {
+        // Pack all line strips into a single VBO upload. Each strip is drawn separately
+        // via glMultiDraw-style offsets to avoid stitching the last vertex of one trail
+        // to the first vertex of the next.
+        Span<int> offsets = stackalloc int[planets.Length];
+        Span<int> counts = stackalloc int[planets.Length];
+
+        int totalVerts = 0;
+        for (int i = 0; i < planets.Length; i++) totalVerts += planets[i].TrailCount;
+        if (totalVerts < 2) return;
+        if (totalVerts > TrailMaxVertices) totalVerts = TrailMaxVertices;
+
+        var data = new float[totalVerts * 4];
+        int v = 0;
+        for (int i = 0; i < planets.Length; i++)
+        {
+            var p = planets[i];
+            offsets[i] = v;
+            int count = p.TrailCount;
+            if (count < 2) { counts[i] = 0; continue; }
+            // Walk from oldest to newest. When the buffer is full, oldest sits at TrailHead.
+            int start = (p.TrailHead - count + Planet.TrailCapacity) % Planet.TrailCapacity;
+            for (int j = 0; j < count; j++)
+            {
+                if (v >= TrailMaxVertices) break;
+                var pos = p.Trail[(start + j) % Planet.TrailCapacity];
+                float age = count == 1 ? 1f : (float)j / (count - 1);
+                data[v * 4 + 0] = pos.X;
+                data[v * 4 + 1] = pos.Y;
+                data[v * 4 + 2] = pos.Z;
+                data[v * 4 + 3] = age;
+                v++;
+            }
+            counts[i] = v - offsets[i];
+        }
+        if (v < 2) return;
+
+        GL.BindVertexArray(_trailVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _trailVbo);
+        GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, v * 4 * sizeof(float), data);
+
+        _trailShader.Use();
+        _trailShader.SetMatrix4("uView", cam.ViewMatrix);
+        _trailShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _trailShader.SetVector4("uColor", new Vector4(0.85f, 0.9f, 1.0f, 0.9f));
+
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.DepthMask(false);
+        for (int i = 0; i < planets.Length; i++)
+        {
+            if (counts[i] >= 2)
+                GL.DrawArrays(PrimitiveType.LineStrip, offsets[i], counts[i]);
+        }
+        GL.DepthMask(true);
+        GL.Disable(EnableCap.Blend);
         GL.BindVertexArray(0);
     }
 
@@ -660,6 +744,7 @@ public sealed class Renderer : IDisposable
         _glowShader = new ShaderProgram(GlowVS, GlowFS);
         _textShader = new ShaderProgram(TextVS, TextFS);
         _starsShader = new ShaderProgram(SkyVS, SkyFS);
+        _trailShader = new ShaderProgram(TrailVS, TrailFS);
         _brightShader = new ShaderProgram(PostVS, BrightFS);
         _blurShader = new ShaderProgram(PostVS, BlurFS);
         _compositeShader = new ShaderProgram(PostVS, CompositeFS);
@@ -722,6 +807,25 @@ void main(){ gl_Position = uProj * uView * uModel * vec4(aPos,1.0); }";
     private const string OrbitFS = @"#version 330 core
 out vec4 fragColor; uniform vec4 uColor;
 void main(){ fragColor = uColor; }";
+
+    // Trail line strips: per-vertex 'age' attribute (0..1) is multiplied into the
+    // alpha so the oldest end of each strip fades to fully transparent.
+    private const string TrailVS = @"#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aAge;
+uniform mat4 uView; uniform mat4 uProj;
+out float vAge;
+void main(){
+    vAge = aAge;
+    gl_Position = uProj * uView * vec4(aPos, 1.0);
+}";
+    private const string TrailFS = @"#version 330 core
+in float vAge; out vec4 fragColor; uniform vec4 uColor;
+void main(){
+    // Quadratic falloff so most of the trail is faint and only the head is bright.
+    float a = uColor.a * vAge * vAge;
+    fragColor = vec4(uColor.rgb, a);
+}";
 
     private const string StarVS = @"#version 330 core
 layout(location=0) in vec3 aPos; layout(location=1) in float aBrightness;
@@ -865,6 +969,7 @@ void main(){
         _glowShader?.Dispose();
         _textShader?.Dispose();
         _starsShader?.Dispose();
+        _trailShader?.Dispose();
         _brightShader?.Dispose();
         _blurShader?.Dispose();
         _compositeShader?.Dispose();
@@ -875,6 +980,7 @@ void main(){
         GL.DeleteVertexArray(_quadVao); GL.DeleteBuffer(_quadVbo);
         GL.DeleteVertexArray(_axisVao); GL.DeleteBuffer(_axisVbo);
         GL.DeleteVertexArray(_textVao); GL.DeleteBuffer(_textVbo);
+        GL.DeleteVertexArray(_trailVao); GL.DeleteBuffer(_trailVbo);
         GL.DeleteTexture(_sunTexture);
         GL.DeleteTexture(_ringTexture);
         GL.DeleteTexture(_starsTexture);

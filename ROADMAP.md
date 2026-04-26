@@ -8,7 +8,7 @@ Priorities are subjective — anything here is fair game, in any order.
 ## 🥇 Top picks (highest wow-per-line-of-code)
 
 1. ~~**Bloom / HDR glow on Sun & flares** — fullscreen post-process: extract bright pixels → Gaussian blur → additive composite. Will instantly raise the perceived production value.~~ ✅ **Done** — implemented in `Renderer` as an HDR (RGBA16F) offscreen target + bright-pass + 6-pass separable Gaussian blur + additive composite (`BeginScene` / `EndSceneAndApplyBloom`).
-2. **Smooth focus transition + planet trails** — lerp `Camera.Target` and `Distance` over ~0.5 s instead of snapping; render a fading line strip behind each planet for the last *N* positions. Looks "cinematic" especially at high simulation speed.
+2. ~~**Smooth focus transition + planet trails** — lerp `Camera.Target` and `Distance` over ~0.5 s instead of snapping; render a fading line strip behind each planet for the last *N* positions. Looks "cinematic" especially at high simulation speed.~~ ✅ **Done** — `SolarSystemWindow.FocusOn` now starts a 0.5 s smoothstep lerp on `Camera.Target`/`Distance` (tracking the body's live position en route); each `Planet` keeps a 200-sample ring buffer that `Renderer.DrawTrails` rasterises as a per-vertex-alpha-fading `LineStrip`. Toggle with `T`.
 3. **Logarithmic depth + minimum screen-size dots** — make the real-scale (R) mode actually usable: log-depth shader (`gl_FragDepth = log2(1+w)/log2(1+far)`) eliminates z-fighting at huge near/far ratios, and a per-body screen-space minimum size (e.g. ≥ 2 px) keeps planets visible even from astronomical distances.
 
 ---
@@ -30,7 +30,7 @@ Priorities are subjective — anything here is fair game, in any order.
 | # | Feature | Notes |
 |---|---|---|
 | S1 | Pause (Space) and reverse-time keys (`,` / `.`) | ✅ Done. `Space` toggles pause; `,` plays backward, `.` plays forward (magnitude preserved); `+`/`-` work in both directions. |
-| S2 | Planet trails | Ring buffer of last N positions per body, drawn as fading line strip. |
+| S2 | Planet trails | ✅ Done. Per-planet 200-sample ring buffer rendered as a fading `LineStrip` (alpha quadratic in age). Toggle with `T`; auto-clears on direction reverse and scale toggle. |
 | S3 | Asteroid belt | ~10 k instanced billboards or tiny spheres between Mars and Jupiter, randomised semi-major axes / eccentricities / inclinations within real ranges. |
 | S4 | Comet with ion / dust tail | High-eccentricity Kepler orbit; particle tail always pointing away from the Sun. |
 | S5 | Date seek | `T` key opens text input; jump to a specific calendar date or `±N` days. |
@@ -42,7 +42,7 @@ Priorities are subjective — anything here is fair game, in any order.
 
 | # | Feature | Notes |
 |---|---|---|
-| Q1 | Smooth focus transitions | Lerp `Camera.Target` and `Distance` instead of snapping. |
+| Q1 | Smooth focus transitions | ✅ Done — see Top picks #2. |
 | Q2 | Click-to-pick the Moon | `TryPick` currently iterates only over planets + Sun — extend to `_moon`. |
 | Q3 | Search bodies by name | Ctrl+F overlay with autocomplete over `_planets[].Name` (+ Moon, Sun, future bodies). |
 | Q4 | Screenshot key | F12 → `GL.ReadPixels` + `System.Drawing` PNG export to `screenshots/`. |
