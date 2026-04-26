@@ -11,14 +11,18 @@ public sealed class SolarSystemWindow : GameWindow
 {
     public const float SunRadius = 5f;
 
-    // Moon orbit parameters (visual, not to scale).
-    private const float MoonOrbitRadius = 4.0f;        // world units from Earth's center
+    // Moon orbit parameters (visual, NOT to scale — the real ratio Moon/Earth-orbit is
+    // ~0.00257 AU which would be invisible. We inflate it just enough to clearly show
+    // the Moon orbiting Earth while staying safely inside the Earth–Venus gap (~6 units
+    // in world space after the a^0.45 distance compression in OrbitalMechanics).
+    private const float MoonOrbitRadius = 2.5f;        // world units from Earth's center
     private const float MoonOrbitInclinationDeg = 5.145f;
     private const double MoonOrbitalPeriodDays = 27.321661;
 
     private readonly Renderer _renderer = new();
     private readonly Camera _camera = new();
     private readonly SolarWind _solarWind = new();
+    private readonly SolarFlares _solarFlares = new();
     private BitmapFont _font = null!;
     private Planet[] _planets = null!;
     private Planet _moon = null!;
@@ -45,6 +49,7 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.FramebufferSize = new Vector2i(ClientSize.X, ClientSize.Y);
         _renderer.Initialize();
         _solarWind.Initialize();
+        _solarFlares.Initialize();
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
@@ -139,10 +144,11 @@ public sealed class SolarSystemWindow : GameWindow
             _camera.Target = _planets[_focusIndex].Position;
 
         _solarWind.Update((float)args.Time, Vector3.Zero, SunRadius);
+        _solarFlares.Update((float)args.Time, Vector3.Zero, SunRadius);
 
         // Title with current sim date
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind  [F] flares";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -163,6 +169,7 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.A: _showAxes = !_showAxes; break;
             case Keys.L: _showLabels = !_showLabels; break;
             case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
+            case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
 
             case Keys.KeyPadAdd:
             case Keys.Equal:
@@ -210,6 +217,7 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.DrawSaturnRing(_camera, saturn);
 
         _solarWind.Draw(_camera);
+        _solarFlares.Draw(_camera);
 
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, _planets);
 
@@ -250,6 +258,7 @@ public sealed class SolarSystemWindow : GameWindow
             "L           toggle labels\n" +
             "A           toggle axes\n" +
             "W           toggle solar wind\n" +
+            "F           toggle solar flares\n" +
             "Esc         quit";
         _renderer.DrawText(_font, help, 12, 78, 13, dim);
 
@@ -424,6 +433,7 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnUnload()
     {
         _solarWind.Dispose();
+        _solarFlares.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
