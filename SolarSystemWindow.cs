@@ -588,7 +588,7 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawClouds(_camera, p, Vector3.Zero);
 
         var saturn = _planets[5];
-        _renderer.DrawSaturnRing(_camera, saturn);
+        _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
 
         _belt.Draw(_camera);
         _comet.DrawTail(_camera);
@@ -601,6 +601,11 @@ public sealed class SolarSystemWindow : GameWindow
         // default framebuffer. All subsequent 2D overlays (labels, UI panels)
         // are drawn directly to the default framebuffer and therefore unaffected.
         _renderer.EndSceneAndApplyBloom();
+
+        // V6: lens flare ghosts. Drawn after the composite so the chain isn't
+        // smeared by bloom and looks like internal reflections in the lens
+        // rather than a halo of the Sun itself.
+        _renderer.DrawLensFlare(_camera, Vector3.Zero);
 
         // Labels
         if (_showLabels)

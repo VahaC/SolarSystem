@@ -29,6 +29,7 @@ public sealed class Renderer : IDisposable
     private ShaderProgram _starsShader = null!;
     private ShaderProgram _trailShader = null!;
     private ShaderProgram _cloudShader = null!;
+    private ShaderProgram _lensFlareShader = null!;
 
     // Sun / Sky
     private int _sunTexture;
@@ -73,8 +74,14 @@ public sealed class Renderer : IDisposable
             ? sunTex : TextureManager.CreateProcedural(255, 220, 110);
         _ringTexture = TextureManager.TryLoadFile("8k_saturn_ring_alpha.png", out int ringTex)
             ? ringTex : TextureManager.CreateRingTexture();
-        _starsTexture = TextureManager.TryLoadFile("8k_stars_milky_way.jpg", out int skyTex)
-            ? skyTex : TextureManager.CreateProcedural(8, 8, 18);
+        // V7: Milky Way sky. Try the underscored filename first (current convention),
+        // fall back to the no-underscore variant referenced in the roadmap. If neither
+        // ships, we keep a tiny solid-colour procedural texture as a last resort.
+        if (TextureManager.TryLoadFile("8k_stars_milky_way.jpg", out int skyTex)
+            || TextureManager.TryLoadFile("8k_stars_milkyway.jpg", out skyTex))
+            _starsTexture = skyTex;
+        else
+            _starsTexture = TextureManager.CreateProcedural(8, 8, 18);
 
         GL.Enable(EnableCap.DepthTest);
         GL.Enable(EnableCap.CullFace);
@@ -656,6 +663,27 @@ public sealed class Renderer : IDisposable
         GL.BindTexture(TextureTarget.Texture2D, p.NightTextureId);
         _planetShader.SetInt("uNightTex", 1);
         _planetShader.SetInt("uHasNight", p.NightTextureId != 0 ? 1 : 0);
+
+        // V5: Saturn ring shadow on the planet. For non-Saturn bodies we leave
+        // uHasRing = 0 so the shader skips the ring-shadow branch entirely. For
+        // Saturn we feed the same inner/outer/normal that DrawSaturnRing uses, plus
+        // bind the ring texture (TU2) so the per-fragment ray-vs-disk test can
+        // attenuate direct sunlight by the ring's per-radius opacity.
+        bool hasRing = p.Name == "Saturn";
+        GL.ActiveTexture(TextureUnit.Texture2);
+        GL.BindTexture(TextureTarget.Texture2D, hasRing ? _ringTexture : 0);
+        _planetShader.SetInt("uRingTex", 2);
+        _planetShader.SetInt("uHasRing", hasRing ? 1 : 0);
+        if (hasRing)
+        {
+            float tilt = MathHelper.DegreesToRadians(p.AxisTiltDeg);
+            // Ring is built in the local XZ plane, so its world normal is RotZ(tilt)*(0,1,0)
+            // = (-sin tilt, cos tilt, 0) — same transform DrawSaturnRing applies to the disk.
+            var ringNormal = new Vector3(-MathF.Sin(tilt), MathF.Cos(tilt), 0f);
+            _planetShader.SetVector3("uRingNormal", ringNormal);
+            _planetShader.SetFloat("uRingInner", p.VisualRadius * 1.35f);
+            _planetShader.SetFloat("uRingOuter", p.VisualRadius * 2.4f);
+        }
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindVertexArray(_sphereVao);
         GL.DrawElements(PrimitiveType.Triangles, _sphereIndexCount, DrawElementsType.UnsignedInt, 0);
@@ -707,7 +735,7 @@ public sealed class Renderer : IDisposable
     /// shader program just to render a single line loop.</summary>
     public void DrawCometOrbit(Camera cam, Comet comet) => comet.DrawOrbit(cam, _orbitShader);
 
-    public void DrawSaturnRing(Camera cam, Planet saturn)
+    public void DrawSaturnRing(Camera cam, Planet saturn, Vector3 sunPos)
     {
         _ringShader.Use();
         _ringShader.SetMatrix4("uView", cam.ViewMatrix);
@@ -717,6 +745,13 @@ public sealed class Renderer : IDisposable
                     * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(saturn.AxisTiltDeg))
                     * Matrix4.CreateTranslation(saturn.Position);
         _ringShader.SetMatrix4("uModel", model);
+        // V5: Saturn shadow on the ring. Per-fragment ray-vs-sphere from the ring
+        // surface toward the Sun; if the ray hits Saturn before reaching the Sun
+        // (t in (0,1)) we darken the ring fragment.
+        _ringShader.SetVector3("uPlanetCenter", saturn.Position);
+        _ringShader.SetFloat("uPlanetRadius", saturn.VisualRadius);
+        _ringShader.SetVector3("uLightPos", sunPos);
+        _ringShader.SetInt("uHasShadow", 1);
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindTexture(TextureTarget.Texture2D, _ringTexture);
         _ringShader.SetInt("uTex", 0);
@@ -728,6 +763,53 @@ public sealed class Renderer : IDisposable
         GL.BindVertexArray(0);
         GL.Enable(EnableCap.CullFace);
         GL.Disable(EnableCap.Blend);
+    }
+
+    /// <summary>V6: screen-space lens flare. Projects <paramref name="sunPos"/> to NDC,
+    /// fades by alignment with the camera's view forward (so the ghosts only ignite
+    /// when the Sun is roughly looked-at) and draws an additive fullscreen quad of
+    /// coloured ghosts along the Sun-through-centre axis. No-op when the Sun is
+    /// behind the camera or off-screen by a large margin.</summary>
+    public void DrawLensFlare(Camera cam, Vector3 sunPos)
+    {
+        var fwd = (cam.Target - cam.Eye);
+        var toSun = sunPos - cam.Eye;
+        if (fwd.LengthSquared < 1e-8f || toSun.LengthSquared < 1e-8f) return;
+        fwd.Normalize();
+        toSun.Normalize();
+        float align = Vector3.Dot(fwd, toSun);
+        if (align <= 0.05f) return; // Sun behind / nearly behind the camera
+
+        // Project Sun world position to NDC. OpenTK uses row-vector convention,
+        // mirroring DrawLabel.
+        var clip = new Vector4(sunPos, 1f) * cam.ViewMatrix * cam.ProjectionMatrix;
+        if (clip.W <= 0f) return;
+        var ndc = clip.Xyz / clip.W;
+        // Soft cutoff outside the screen so flares don't pop in/out abruptly.
+        float ndcLen = MathF.Sqrt(ndc.X * ndc.X + ndc.Y * ndc.Y);
+        float screenFactor = 1f - MathHelper.Clamp((ndcLen - 0.6f) / 1.4f, 0f, 1f);
+        float alignFactor = MathHelper.Clamp((align - 0.4f) / 0.6f, 0f, 1f);
+        float intensity = screenFactor * alignFactor * 0.6f;
+        if (intensity <= 0.001f) return;
+
+        _lensFlareShader.Use();
+        _lensFlareShader.SetVector2("uSunNdc", new Vector2(ndc.X, ndc.Y));
+        _lensFlareShader.SetFloat("uIntensity", intensity);
+        _lensFlareShader.SetFloat("uAspect",
+            FramebufferSize.Y > 0 ? (float)FramebufferSize.X / FramebufferSize.Y : 1f);
+
+        GL.Disable(EnableCap.DepthTest);
+        GL.Disable(EnableCap.CullFace);
+        GL.DepthMask(false);
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.One, BlendingFactor.One);
+        GL.BindVertexArray(_quadVao);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        GL.BindVertexArray(0);
+        GL.Disable(EnableCap.Blend);
+        GL.DepthMask(true);
+        GL.Enable(EnableCap.CullFace);
+        GL.Enable(EnableCap.DepthTest);
     }
 
     /// <summary>Draws a string in screen space. Origin = top-left of screen, x grows right, y grows down.
@@ -821,6 +903,7 @@ public sealed class Renderer : IDisposable
         _starsShader = new ShaderProgram(SkyVS, SkyFS);
         _trailShader = new ShaderProgram(TrailVS, TrailFS);
         _cloudShader = new ShaderProgram(PlanetVS, CloudFS);
+        _lensFlareShader = new ShaderProgram(PostVS, LensFlareFS);
         _brightShader = new ShaderProgram(PostVS, BrightFS);
         _blurShader = new ShaderProgram(PostVS, BlurFS);
         _compositeShader = new ShaderProgram(PostVS, CompositeFS);
@@ -872,7 +955,12 @@ in vec3 vWorldPos; in vec3 vNormal; in vec2 vUv;
 out vec4 fragColor;
 uniform sampler2D uTex;
 uniform sampler2D uNightTex;
+uniform sampler2D uRingTex;
 uniform int uHasNight;
+uniform int uHasRing;
+uniform float uRingInner;
+uniform float uRingOuter;
+uniform vec3 uRingNormal;
 uniform vec3 uLightPos; uniform vec3 uViewPos; uniform vec3 uLightColor; uniform vec3 uTint;
 uniform vec3 uPlanetCenter;
 void main(){
@@ -886,8 +974,29 @@ void main(){
     float spec = pow(max(dot(V,R), 0.0), 24.0) * 0.15;
     vec3 base = texture(uTex, vUv).rgb * uTint;
     vec3 ambient = base * 0.18;
-    vec3 lit = base * uLightColor * diff;
-    vec3 color = ambient + lit + uLightColor * spec * diff;
+    // V5: ring-shadow attenuation on the lit hemisphere. Cast a ray from the
+    // current fragment toward the Sun and intersect it with the ring plane; if
+    // the hit point falls between the inner and outer ring radii, sample the
+    // ring texture's alpha and use it as the occlusion fraction.
+    float ringShadow = 1.0;
+    if (uHasRing != 0 && NdotL > 0.0) {
+        vec3 toSun = uLightPos - vWorldPos;
+        float denom = dot(toSun, uRingNormal);
+        if (abs(denom) > 1e-6) {
+            float t = -dot(vWorldPos - uPlanetCenter, uRingNormal) / denom;
+            if (t > 0.0 && t < 1.0) {
+                vec3 hit = vWorldPos + t * toSun;
+                float r = length(hit - uPlanetCenter);
+                if (r > uRingInner && r < uRingOuter) {
+                    float u = (r - uRingInner) / max(uRingOuter - uRingInner, 1e-4);
+                    float a = texture(uRingTex, vec2(u, 0.5)).a;
+                    ringShadow = clamp(1.0 - a, 0.0, 1.0);
+                }
+            }
+        }
+    }
+    vec3 lit = base * uLightColor * diff * ringShadow;
+    vec3 color = ambient + lit + uLightColor * spec * diff * ringShadow;
     // V4: night-side emissive map (city lights). Only contributes on the dark
     // side of the terminator and fades smoothly across it.
     if (uHasNight != 0) {
@@ -1008,14 +1117,43 @@ layout(location=0) in vec3 aPos; layout(location=1) in vec2 aUv;
 uniform mat4 uModel; uniform mat4 uView; uniform mat4 uProj;
 uniform float uFcoef;
 out vec2 vUv;
+out vec3 vWorldPos;
 void main(){
     vUv = aUv;
-    gl_Position = uProj * uView * uModel * vec4(aPos,1.0);
+    vec4 wp = uModel * vec4(aPos, 1.0);
+    vWorldPos = wp.xyz;
+    gl_Position = uProj * uView * wp;
     gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
 }";
     private const string RingFS = @"#version 330 core
-in vec2 vUv; out vec4 fragColor; uniform sampler2D uTex;
-void main(){ fragColor = texture(uTex, vUv); }";
+in vec2 vUv; in vec3 vWorldPos; out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec3 uPlanetCenter;
+uniform float uPlanetRadius;
+uniform vec3 uLightPos;
+uniform int uHasShadow;
+void main(){
+    vec4 c = texture(uTex, vUv);
+    // V5: Saturn-on-ring shadow. Ray from the ring fragment toward the Sun
+    // intersected with Saturn's bounding sphere; if the segment hits the sphere
+    // (t in (0, 1)) the fragment is occluded and we darken it to a soft shadow.
+    if (uHasShadow != 0) {
+        vec3 d = uLightPos - vWorldPos;
+        vec3 oc = vWorldPos - uPlanetCenter;
+        float a = dot(d, d);
+        float b = dot(oc, d);
+        float cc = dot(oc, oc) - uPlanetRadius * uPlanetRadius;
+        float disc = b * b - a * cc;
+        if (disc > 0.0) {
+            float sq = sqrt(disc);
+            float t0 = (-b - sq) / a;
+            float t1 = (-b + sq) / a;
+            if ((t0 > 0.0 && t0 < 1.0) || (t1 > 0.0 && t1 < 1.0))
+                c.rgb *= 0.25;
+        }
+    }
+    fragColor = c;
+}";
 
     private const string GlowVS = @"#version 330 core
 layout(location=0) in vec2 aPos; layout(location=1) in vec2 aUv;
@@ -1104,6 +1242,41 @@ void main(){
     fragColor = vec4(hdr + bloom * uBloomStrength, 1.0);
 }";
 
+    // V6: Screen-space lens flare. A fullscreen quad whose fragment shader
+    // synthesises a chain of coloured "ghosts" along the line from the Sun's
+    // projected position through the screen centre. Drawn additively over the
+    // composited HDR result so it looks like internal reflections in the lens
+    // rather than light bleeding from the Sun itself.
+    private const string LensFlareFS = @"#version 330 core
+in vec2 vUv; out vec4 fragColor;
+uniform vec2 uSunNdc;
+uniform float uIntensity;
+uniform float uAspect;
+void main(){
+    vec2 ndc = vUv * 2.0 - 1.0;
+    vec2 dir = -uSunNdc; // sun -> screen centre
+    float fracs[6] = float[](0.0, 0.4, 0.7, 1.0, 1.4, 1.8);
+    float sizes[6] = float[](0.10, 0.05, 0.04, 0.06, 0.03, 0.05);
+    vec3 tints[6] = vec3[](
+        vec3(1.00, 0.85, 0.55),
+        vec3(0.55, 0.75, 1.00),
+        vec3(1.00, 0.45, 0.45),
+        vec3(0.65, 1.00, 0.55),
+        vec3(1.00, 0.95, 0.65),
+        vec3(0.85, 0.60, 1.00)
+    );
+    vec3 col = vec3(0.0);
+    for (int i = 0; i < 6; i++) {
+        vec2 c = uSunNdc + dir * fracs[i];
+        vec2 d = ndc - c;
+        d.x *= uAspect;
+        float r = length(d);
+        float v = smoothstep(sizes[i], 0.0, r);
+        col += tints[i] * v;
+    }
+    fragColor = vec4(col * uIntensity, 1.0);
+}";
+
     public void Dispose()
     {
         _planetShader?.Dispose();
@@ -1116,6 +1289,7 @@ void main(){
         _starsShader?.Dispose();
         _trailShader?.Dispose();
         _cloudShader?.Dispose();
+        _lensFlareShader?.Dispose();
         _brightShader?.Dispose();
         _blurShader?.Dispose();
         _compositeShader?.Dispose();
