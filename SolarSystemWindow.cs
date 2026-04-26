@@ -32,8 +32,21 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly AsteroidBelt _belt = new();
     private readonly Comet _comet = new();
     private BitmapFont _font = null!;
+    /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
+    /// are the IAU dwarf planets appended by <see cref="Planet.CreateDwarfPlanets"/>.
+    /// They share the same orbit / trail / picking pipeline; only the digit-key
+    /// focus shortcuts are restricted to the first eight.</summary>
     private Planet[] _planets = null!;
+    /// <summary>Index in <see cref="_planets"/> where the dwarf-planet block starts.
+    /// Equals the count returned by <see cref="Planet.CreateAll"/> at load time.</summary>
+    private int _dwarfStart;
+    /// <summary>Slice of <see cref="_planets"/> excluding dwarfs; cached so the
+    /// per-frame draw / pick paths don't reallocate when dwarfs are hidden.</summary>
+    private Planet[] _majorPlanets = null!;
     private Planet _moon = null!;
+    /// <summary>Major satellites (Galileans + Titan) parented to their host planet.</summary>
+    private Moon[] _moons = null!;
+    private float[] _inflatedMoonsRadii = null!;
 
     // Date-seek (S5): when active, keystrokes are routed into the prompt buffer
     // instead of the normal sim controls. Submit with Enter, cancel with Escape.
@@ -58,6 +71,7 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showAxes;
     private bool _showLabels = true;
     private bool _showTrails = true;
+    private bool _showDwarfs = true;
     private int _focusIndex = -1;     // -1 = sun, 0..7 = planet
     private int _selectedIndex = -2;  // -2 = none, -1 = sun, 0..7 = planet
 
@@ -90,6 +104,11 @@ public sealed class SolarSystemWindow : GameWindow
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
+        _dwarfStart = _planets.Length;
+        // S7: append the IAU dwarf planets so they automatically get orbit lines,
+        // trails, picking and info-panel coverage with no further wiring.
+        _planets = [.. _planets, .. Planet.CreateDwarfPlanets()];
+        _majorPlanets = _planets[.._dwarfStart];
         Debug.WriteLine("---- Loading planet textures ----");
         foreach (var p in _planets)
         {
@@ -123,6 +142,31 @@ public sealed class SolarSystemWindow : GameWindow
             (byte)(_moon.ProceduralColor.Y * 255),
             (byte)(_moon.ProceduralColor.Z * 255),
             out _moon.TextureFromFile);
+
+        // S6: Galilean moons of Jupiter (index 4) and Saturn's Titan (index 5).
+        // Visual ("artistic") orbit radii are inflated so the moons sit clearly
+        // outside their host's silhouette in compressed mode; real-scale mode
+        // uses the published km values via OrbitalMechanics.KmToWorldRealScale.
+        _moons =
+        [
+            CreateMoon("Io",       hostIndex: 4, realRadiusKm: 1821.6, color: new Vector3(0.95f, 0.85f, 0.45f),
+                       texture: "8k_io.jpg",       visualRadius: 0.40f, axisTiltDeg: 0.0f,  rotationHours: 1.769138 * 24.0,
+                       orbitKm: 421800.0,    artistic: 5.5f,  periodDays: 1.769138,  inclDeg: 0.05f, phaseDeg: 0),
+            CreateMoon("Europa",   hostIndex: 4, realRadiusKm: 1560.8, color: new Vector3(0.85f, 0.78f, 0.62f),
+                       texture: "8k_europa.jpg",   visualRadius: 0.38f, axisTiltDeg: 0.1f,  rotationHours: 3.551181 * 24.0,
+                       orbitKm: 671100.0,    artistic: 7.0f,  periodDays: 3.551181,  inclDeg: 0.47f, phaseDeg: 90),
+            CreateMoon("Ganymede", hostIndex: 4, realRadiusKm: 2634.1, color: new Vector3(0.70f, 0.65f, 0.58f),
+                       texture: "8k_ganymede.jpg", visualRadius: 0.50f, axisTiltDeg: 0.33f, rotationHours: 7.154553 * 24.0,
+                       orbitKm: 1070400.0,   artistic: 9.0f,  periodDays: 7.154553,  inclDeg: 0.20f, phaseDeg: 180),
+            CreateMoon("Callisto", hostIndex: 4, realRadiusKm: 2410.3, color: new Vector3(0.50f, 0.45f, 0.40f),
+                       texture: "8k_callisto.jpg", visualRadius: 0.48f, axisTiltDeg: 0.0f,  rotationHours: 16.689017 * 24.0,
+                       orbitKm: 1882700.0,   artistic: 12.0f, periodDays: 16.689017, inclDeg: 0.20f, phaseDeg: 270),
+            CreateMoon("Titan",    hostIndex: 5, realRadiusKm: 2574.7, color: new Vector3(0.80f, 0.62f, 0.30f),
+                       texture: "8k_titan.jpg",    visualRadius: 0.48f, axisTiltDeg: 0.0f,  rotationHours: 15.945421 * 24.0,
+                       orbitKm: 1221870.0,   artistic: 9.0f,  periodDays: 15.945421, inclDeg: 0.34875f, phaseDeg: 0),
+        ];
+        _inflatedMoonsRadii = new float[_moons.Length];
+        for (int i = 0; i < _moons.Length; i++) _inflatedMoonsRadii[i] = _moons[i].Body.VisualRadius;
 
         // Snapshot the artistic radii so the R-key toggle can restore them.
         _inflatedPlanetRadii = new float[_planets.Length];
@@ -188,6 +232,35 @@ public sealed class SolarSystemWindow : GameWindow
             _moon.RotationAngleRad = (float)mAngle;
         }
 
+        // S6: Galilean moons + Titan. Same pattern as Earth's Moon: simple circular
+        // orbits inclined to the ecliptic, with a per-moon phase offset so the four
+        // Jovian moons don't start clustered on top of each other. Skipping the full
+        // orbital-element solve here is fine — at the artistic radii used in
+        // compressed mode the visual error is well below one pixel.
+        foreach (var m in _moons)
+        {
+            var host = _planets[m.HostPlanetIndex];
+            float r = OrbitalMechanics.RealScale
+                ? (float)(m.RealOrbitRadiusKm * OrbitalMechanics.KmToWorldRealScale)
+                : m.ArtisticOrbitRadius;
+            double angle = (_simDays / m.OrbitalPeriodDays) * TwoPi
+                           + m.PhaseDeg * OrbitalMechanics.DegToRad;
+            float cx = (float)Math.Cos(angle) * r;
+            float cz = (float)Math.Sin(angle) * r;
+            float incl = MathHelper.DegreesToRadians(m.OrbitInclinationDeg);
+            float cy = cz * MathF.Sin(incl);
+            cz *= MathF.Cos(incl);
+            m.Body.Position = host.Position + new Vector3(cx, cy, cz);
+            m.Body.HelioAU = host.HelioAU;
+            if (m.Body.RotationPeriodHours != 0.0)
+            {
+                double a = (_simDays * 24.0 / m.Body.RotationPeriodHours) * TwoPi;
+                a %= TwoPi;
+                if (a < 0) a += TwoPi;
+                m.Body.RotationAngleRad = (float)a;
+            }
+        }
+
         // Trails: append the current world position to each planet's ring buffer once
         // it has moved more than a planet-relative threshold. Skip while paused so the
         // trail doesn't degenerate into a single multi-stamped point.
@@ -243,7 +316,7 @@ public sealed class SolarSystemWindow : GameWindow
         string speedStr = _paused
             ? "PAUSED"
             : $"{(_daysPerSecond < 0 ? "◀ " : "")}x{Math.Abs(_daysPerSecond):0.##} days/s";
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [T] trails  [L] labels  [W] wind  [F] flares  [R] scale";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [T] trails  [L] labels  [W] wind  [F] flares  [R] scale  [D] dwarfs";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -294,6 +367,19 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.A: _showAxes = !_showAxes; break;
             case Keys.L: _showLabels = !_showLabels; break;
             case Keys.T: _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); break;
+            case Keys.D:
+                _showDwarfs = !_showDwarfs;
+                // If a dwarf was the active focus / selection, drop back to the Sun so
+                // the camera doesn't keep tracking an invisible body.
+                if (!_showDwarfs)
+                {
+                    if (_focusIndex >= _dwarfStart) FocusOn(-1);
+                    if (_selectedIndex >= _dwarfStart) _selectedIndex = -2;
+                    // Clear stale dwarf trails so they don't reappear as a frozen line strip
+                    // on the next toggle-on.
+                    for (int i = _dwarfStart; i < _planets.Length; i++) _planets[i].TrailReset();
+                }
+                break;
             case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
             case Keys.R: ToggleRealScale(); break;
@@ -350,18 +436,24 @@ public sealed class SolarSystemWindow : GameWindow
         base.OnRenderFrame(args);
         _renderer.BeginScene();
 
+        // Choose between the full body list (planets + dwarfs) and the major-only
+        // slice in one place so every render pass sees a consistent view.
+        Planet[] visible = _showDwarfs ? _planets : _majorPlanets;
+
         _renderer.DrawStars(_camera);
         if (_showOrbits)
         {
-            _renderer.DrawOrbits(_camera, _planets);
+            _renderer.DrawOrbits(_camera, visible);
             _renderer.DrawCometOrbit(_camera, _comet);
         }
-        if (_showTrails) _renderer.DrawTrails(_camera, _planets);
+        if (_showTrails) _renderer.DrawTrails(_camera, visible);
 
         _renderer.DrawSun(_camera, Vector3.Zero, SunRadius);
-        foreach (var p in _planets)
+        foreach (var p in visible)
             _renderer.DrawPlanet(_camera, p, Vector3.Zero);
         _renderer.DrawPlanet(_camera, _moon, Vector3.Zero);
+        foreach (var m in _moons)
+            _renderer.DrawPlanet(_camera, m.Body, Vector3.Zero);
         _renderer.DrawPlanet(_camera, _comet.Body, Vector3.Zero);
 
         var saturn = _planets[5];
@@ -372,7 +464,7 @@ public sealed class SolarSystemWindow : GameWindow
         _solarWind.Draw(_camera);
         _solarFlares.Draw(_camera);
 
-        if (_showAxes) _renderer.DrawPlanetAxes(_camera, _planets);
+        if (_showAxes) _renderer.DrawPlanetAxes(_camera, visible);
 
         // Apply HDR bright-pass + Gaussian blur + additive composite to the
         // default framebuffer. All subsequent 2D overlays (labels, UI panels)
@@ -384,13 +476,17 @@ public sealed class SolarSystemWindow : GameWindow
         {
             _renderer.DrawLabel(_font, _camera,
                 new Vector3(0, SunRadius + 1.5f, 0), "Sun", 14, new Vector4(1, 0.9f, 0.5f, 0.95f));
-            foreach (var p in _planets)
+            foreach (var p in visible)
                 _renderer.DrawLabel(_font, _camera,
                     p.Position + new Vector3(0, p.VisualRadius + 1.0f, 0),
                     p.Name, 13, new Vector4(0.85f, 0.9f, 1f, 0.95f));
             _renderer.DrawLabel(_font, _camera,
                 _moon.Position + new Vector3(0, _moon.VisualRadius + 0.5f, 0),
                 _moon.Name, 12, new Vector4(0.85f, 0.85f, 0.85f, 0.9f));
+            foreach (var m in _moons)
+                _renderer.DrawLabel(_font, _camera,
+                    m.Body.Position + new Vector3(0, m.Body.VisualRadius + 0.4f, 0),
+                    m.Body.Name, 11, new Vector4(0.85f, 0.85f, 0.85f, 0.85f));
             _renderer.DrawLabel(_font, _camera,
                 _comet.Body.Position + new Vector3(0, _comet.Body.VisualRadius + 0.5f, 0),
                 _comet.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
@@ -424,6 +520,7 @@ public sealed class SolarSystemWindow : GameWindow
             "L           toggle labels\n" +
             "T           toggle trails\n" +
             "A           toggle axes\n" +
+            "D           toggle dwarf planets\n" +
             "J           jump to date / ±days\n" +
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
@@ -581,6 +678,7 @@ public sealed class SolarSystemWindow : GameWindow
         }
         for (int i = 0; i < _planets.Length; i++)
         {
+            if (!_showDwarfs && i >= _dwarfStart) break;
             if (!TryProject(_planets[i].Position, out var sp)) continue;
             float d = (sp - screenPos).Length;
             float r = PickRadius(_planets[i].Position, _planets[i].VisualRadius);
@@ -648,6 +746,13 @@ public sealed class SolarSystemWindow : GameWindow
             ? (float)(_moon.RealRadiusKm * OrbitalMechanics.KmToWorldRealScale)
             : _inflatedMoonRadius;
 
+        for (int i = 0; i < _moons.Length; i++)
+        {
+            _moons[i].Body.VisualRadius = OrbitalMechanics.RealScale
+                ? (float)(_moons[i].Body.RealRadiusKm * OrbitalMechanics.KmToWorldRealScale)
+                : _inflatedMoonsRadii[i];
+        }
+
         // Orbit lines were uploaded once with the old scale — rebuild them.
         _renderer.BuildOrbits(_planets);
         _comet.RebuildOrbit();
@@ -678,6 +783,37 @@ public sealed class SolarSystemWindow : GameWindow
     {
         if (_planets == null) return;
         foreach (var p in _planets) p.TrailReset();
+    }
+
+    /// <summary>Build a host-orbiting moon: load its texture, set its initial spin
+    /// to match the host system's tidal locking convention, and wrap the resulting
+    /// <see cref="Planet"/> with the orbital parameters needed by the per-frame
+    /// position update in <see cref="OnUpdateFrame"/>.</summary>
+    private static Moon CreateMoon(string name, int hostIndex,
+                                   double realRadiusKm, Vector3 color, string texture,
+                                   float visualRadius, float axisTiltDeg, double rotationHours,
+                                   double orbitKm, float artistic, double periodDays,
+                                   float inclDeg, double phaseDeg)
+    {
+        var body = new Planet
+        {
+            Name = name,
+            VisualRadius = visualRadius,
+            RealRadiusKm = realRadiusKm,
+            ProceduralColor = color,
+            TextureFile = texture,
+            AxisTiltDeg = axisTiltDeg,
+            RotationPeriodHours = rotationHours,
+            OrbitalPeriodYears = periodDays / 365.25,
+            SemiMajorAxisAU = orbitKm / 1.495978707e8,
+        };
+        body.TextureId = TextureManager.LoadOrProcedural(
+            body.TextureFile,
+            (byte)(body.ProceduralColor.X * 255),
+            (byte)(body.ProceduralColor.Y * 255),
+            (byte)(body.ProceduralColor.Z * 255),
+            out body.TextureFromFile);
+        return new Moon(body, hostIndex, orbitKm, artistic, periodDays, inclDeg, phaseDeg);
     }
 
     protected override void OnTextInput(TextInputEventArgs e)

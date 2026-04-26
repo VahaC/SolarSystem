@@ -1,4 +1,4 @@
-using OpenTK.Mathematics;
+﻿using OpenTK.Mathematics;
 
 namespace SolarSystem;
 
@@ -176,6 +176,92 @@ public sealed class Planet
                 ProceduralColor = new Vector3(0.30f, 0.50f, 0.95f),
                 TextureFile = "2k_neptune.jpg",
                 AxisTiltDeg = 28.32f, RotationPeriodHours = 16.11,
+            },
+        };
+    }
+
+    /// <summary>
+    /// Five officially-recognised dwarf planets with J2000 Keplerian elements.
+    /// They reuse the same Planet record (and therefore the same orbit / trail /
+    /// picking / Kepler-solve pipeline) as the major planets — the only thing that
+    /// distinguishes them at runtime is that they aren't bound to a numeric focus
+    /// shortcut. MeanLongitudeDeg = M0 + ω + Ω so OrbitalMechanics.HeliocentricPosition
+    /// recovers the published mean anomaly via M = L − ϖ.
+    /// </summary>
+    public static Planet[] CreateDwarfPlanets()
+    {
+        return new[]
+        {
+            // Ceres — main-belt, in between Mars and Jupiter.
+            new Planet
+            {
+                Name = "Ceres",
+                SemiMajorAxisAU = 2.7691652, Eccentricity = 0.0760091,
+                InclinationDeg = 10.5934, LongAscNodeDeg = 80.3293,
+                ArgPerihelionDeg = 73.5970,
+                MeanLongitudeDeg = 287.5882 + 73.5970 + 80.3293, // M + ω + Ω
+                OrbitalPeriodYears = 4.605,
+                VisualRadius = 0.3f, RealRadiusKm = 469.7,
+                ProceduralColor = new Vector3(0.60f, 0.55f, 0.50f),
+                TextureFile = "4k_ceres_fictional.jpg",
+                AxisTiltDeg = 4.0f, RotationPeriodHours = 9.074,
+            },
+            // Pluto — Kuiper belt, mildly eccentric and inclined.
+            new Planet
+            {
+                Name = "Pluto",
+                SemiMajorAxisAU = 39.48211675, Eccentricity = 0.24882730,
+                InclinationDeg = 17.14001206, LongAscNodeDeg = 110.30393684,
+                ArgPerihelionDeg = 224.06891629 - 110.30393684, // ϖ − Ω
+                MeanLongitudeDeg = 238.92903833,
+                OrbitalPeriodYears = 248.00208,
+                VisualRadius = 0.6f, RealRadiusKm = 1188.3,
+                ProceduralColor = new Vector3(0.78f, 0.65f, 0.50f),
+                TextureFile = "2k_pluto.jpg",
+                AxisTiltDeg = 122.53f, RotationPeriodHours = -153.2928, // retrograde
+            },
+            // Haumea — fast-spinning ellipsoid in the Kuiper belt.
+            new Planet
+            {
+                Name = "Haumea",
+                SemiMajorAxisAU = 43.116, Eccentricity = 0.19501,
+                InclinationDeg = 28.2137, LongAscNodeDeg = 121.79,
+                ArgPerihelionDeg = 239.05,
+                MeanLongitudeDeg = 205.66 + 239.05 + 121.79,
+                OrbitalPeriodYears = 283.12,
+                VisualRadius = 0.5f, RealRadiusKm = 798.0,
+                ProceduralColor = new Vector3(0.90f, 0.88f, 0.85f),
+                TextureFile = "4k_haumea_fictional.jpg",
+                AxisTiltDeg = 0.0f, RotationPeriodHours = 3.9155,
+            },
+            // Makemake — bright, reddish, classical Kuiper-belt object.
+            new Planet
+            {
+                Name = "Makemake",
+                SemiMajorAxisAU = 45.430, Eccentricity = 0.16259,
+                InclinationDeg = 29.0058, LongAscNodeDeg = 79.382,
+                ArgPerihelionDeg = 295.154,
+                MeanLongitudeDeg = 152.146 + 295.154 + 79.382,
+                OrbitalPeriodYears = 309.09,
+                VisualRadius = 0.5f, RealRadiusKm = 715.0,
+                ProceduralColor = new Vector3(0.75f, 0.55f, 0.40f),
+                TextureFile = "4k_makemake_fictional.jpg",
+                AxisTiltDeg = 0.0f, RotationPeriodHours = 22.83,
+            },
+            // Eris — scattered-disk; a far enough out and e high enough to noticeably
+            // distort its orbit ring relative to the major planets.
+            new Planet
+            {
+                Name = "Eris",
+                SemiMajorAxisAU = 68.146, Eccentricity = 0.43607,
+                InclinationDeg = 43.7405, LongAscNodeDeg = 36.0387,
+                ArgPerihelionDeg = 151.6394,
+                MeanLongitudeDeg = 204.7244 + 151.6394 + 36.0387,
+                OrbitalPeriodYears = 558.04,
+                VisualRadius = 0.6f, RealRadiusKm = 1163.0,
+                ProceduralColor = new Vector3(0.85f, 0.85f, 0.82f),
+                TextureFile = "4k_eris_fictional.jpg",
+                AxisTiltDeg = 0.0f, RotationPeriodHours = 25.9,
             },
         };
     }
