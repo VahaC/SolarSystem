@@ -21,6 +21,8 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **Focus cycling** with number keys; orbiting/panning/zoom with the mouse.
 - **Time control** — variable simulation speed from 0.1 d/s to 1000 d/s.
 
+> 📍 Looking for what's coming next? See **[ROADMAP.md](ROADMAP.md)** for planned features and improvement ideas.
+
 ---
 
 ## 🎮 Controls
