@@ -97,7 +97,21 @@ public static class OrbitalMechanics
     // Chosen so Neptune (a ≈ 30.07 AU) lands at ~200 world units.
     private const double K = 200.0 / 4.6739; // 30.07^0.45 ≈ 4.6739
 
+    /// <summary>When true, distances are mapped LINEARLY (1 AU = AuToWorldRealScale units)
+    /// and bodies use radii derived from real kilometres via KmToWorldRealScale. The result
+    /// is astronomically truthful — and visually brutal: planets become near-invisible dots
+    /// while Neptune sits ~1500 units from the Sun.</summary>
+    public static bool RealScale = false;
+
+    /// <summary>1 AU in world units when <see cref="RealScale"/> is on.</summary>
+    public const double AuToWorldRealScale = 50.0;
+    /// <summary>1 km in world units when <see cref="RealScale"/> is on (uses the same
+    /// linear scale as AuToWorldRealScale, so radii and distances share one unit system).</summary>
+    public const double KmToWorldRealScale = AuToWorldRealScale / 1.495978707e8;
+
     /// <summary>Per-orbit uniform scale factor that converts AU vectors to world-unit vectors.</summary>
     public static float OrbitWorldScale(double semiMajorAxisAU)
-        => (float)(K * Math.Pow(semiMajorAxisAU, Power - 1.0));
+        => RealScale
+            ? (float)AuToWorldRealScale
+            : (float)(K * Math.Pow(semiMajorAxisAU, Power - 1.0));
 }

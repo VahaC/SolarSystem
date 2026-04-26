@@ -9,7 +9,13 @@ namespace SolarSystem;
 
 public sealed class SolarSystemWindow : GameWindow
 {
-    public const float SunRadius = 5f;
+    /// <summary>Effective Sun radius in world units. Tracks the global scale mode:
+    /// in compressed mode the Sun is artificially huge (5 units) so it dominates the
+    /// scene; in real-scale mode it's derived from its real radius in kilometres.</summary>
+    public static float SunRadius
+        => OrbitalMechanics.RealScale
+            ? (float)(695700.0 * OrbitalMechanics.KmToWorldRealScale)
+            : 5f;
 
     // Moon orbit parameters (visual, NOT to scale — the real ratio Moon/Earth-orbit is
     // ~0.00257 AU which would be invisible. We inflate it just enough to clearly show
@@ -26,6 +32,11 @@ public sealed class SolarSystemWindow : GameWindow
     private BitmapFont _font = null!;
     private Planet[] _planets = null!;
     private Planet _moon = null!;
+    /// <summary>Snapshot of each planet's inflated VisualRadius captured at load.
+    /// In real-scale mode VisualRadius is replaced with the real km-derived value;
+    /// switching back restores these originals.</summary>
+    private float[] _inflatedPlanetRadii = null!;
+    private float _inflatedMoonRadius;
 
     private double _simDays;          // days since J2000
     private double _daysPerSecond = 1.0;
@@ -87,6 +98,11 @@ public sealed class SolarSystemWindow : GameWindow
             (byte)(_moon.ProceduralColor.Z * 255),
             out _moon.TextureFromFile);
 
+        // Snapshot the artistic radii so the R-key toggle can restore them.
+        _inflatedPlanetRadii = new float[_planets.Length];
+        for (int i = 0; i < _planets.Length; i++) _inflatedPlanetRadii[i] = _planets[i].VisualRadius;
+        _inflatedMoonRadius = _moon.VisualRadius;
+
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
         _camera.ResetDefault();
     }
@@ -123,12 +139,17 @@ public sealed class SolarSystemWindow : GameWindow
             }
         }
 
-        // Moon orbits Earth in a circle inclined to the ecliptic. Position is purely visual.
+        // Moon orbits Earth in a circle inclined to the ecliptic. In compressed mode
+        // the radius is artistic (visible without engulfing Venus); in real-scale mode
+        // it uses the actual ~384,400 km converted via the same AU/km scale.
         {
             var earth = _planets[2];
+            float moonRadius = OrbitalMechanics.RealScale
+                ? (float)(384400.0 * OrbitalMechanics.KmToWorldRealScale)
+                : MoonOrbitRadius;
             double moonAngle = (_simDays / MoonOrbitalPeriodDays) * TwoPi;
-            float cx = (float)Math.Cos(moonAngle) * MoonOrbitRadius;
-            float cz = (float)Math.Sin(moonAngle) * MoonOrbitRadius;
+            float cx = (float)Math.Cos(moonAngle) * moonRadius;
+            float cz = (float)Math.Sin(moonAngle) * moonRadius;
             float incl = MathHelper.DegreesToRadians(MoonOrbitInclinationDeg);
             float cy = cz * MathF.Sin(incl);
             cz *= MathF.Cos(incl);
@@ -148,7 +169,7 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Title with current sim date
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind  [F] flares";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed x{_daysPerSecond:0.##} days/s  |  [+/-] speed  [0-8] focus  [O] orbits  [L] labels  [W] wind  [F] flares  [R] scale";
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
@@ -170,6 +191,7 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.L: _showLabels = !_showLabels; break;
             case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
+            case Keys.R: ToggleRealScale(); break;
 
             case Keys.KeyPadAdd:
             case Keys.Equal:
@@ -259,6 +281,7 @@ public sealed class SolarSystemWindow : GameWindow
             "A           toggle axes\n" +
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
+            "R           real / compressed scale\n" +
             "Esc         quit";
         _renderer.DrawText(_font, help, 12, 78, 13, dim);
 
@@ -425,9 +448,48 @@ public sealed class SolarSystemWindow : GameWindow
                 (float)(p.HelioAU.Y * s),
                 (float)(p.HelioAU.Z * s));
             _camera.Target = p.Position;
-            _camera.Distance = MathF.Max(p.VisualRadius * 6f, 12f);
+            _camera.Distance = MathF.Max(p.VisualRadius * 6f, _camera.MinDistance * 4f);
             Debug.WriteLine($"[focus] {p.Name} target={p.Position} dist={_camera.Distance:0.##}");
         }
+    }
+
+    private void ToggleRealScale()
+    {
+        OrbitalMechanics.RealScale = !OrbitalMechanics.RealScale;
+
+        // Replace each body's VisualRadius with the value appropriate for the new mode.
+        // Compressed mode restores the artistic radii captured at load; real mode derives
+        // them from real kilometres via KmToWorldRealScale.
+        for (int i = 0; i < _planets.Length; i++)
+        {
+            _planets[i].VisualRadius = OrbitalMechanics.RealScale
+                ? (float)(_planets[i].RealRadiusKm * OrbitalMechanics.KmToWorldRealScale)
+                : _inflatedPlanetRadii[i];
+        }
+        _moon.VisualRadius = OrbitalMechanics.RealScale
+            ? (float)(_moon.RealRadiusKm * OrbitalMechanics.KmToWorldRealScale)
+            : _inflatedMoonRadius;
+
+        // Orbit lines were uploaded once with the old scale — rebuild them.
+        _renderer.BuildOrbits(_planets);
+
+        // Real-scale planets are tiny (Earth ~0.002 units), so allow zooming in much
+        // closer than the default. Compressed mode keeps a comfortable safety floor.
+        _camera.MinDistance = OrbitalMechanics.RealScale ? 0.0005f : 2f;
+        _camera.MaxDistance = OrbitalMechanics.RealScale ? 6000f : 4000f;
+
+        // Re-fit the camera so the freshly rescaled scene fits on screen.
+        if (_focusIndex < 0)
+        {
+            _camera.Distance = OrbitalMechanics.RealScale ? 3200f : 320f;
+            _camera.Target = Vector3.Zero;
+        }
+        else if (_focusIndex < _planets.Length)
+        {
+            _camera.Distance = MathF.Max(_planets[_focusIndex].VisualRadius * 6f, _camera.MinDistance * 4f);
+        }
+
+        Debug.WriteLine($"[scale] {(OrbitalMechanics.RealScale ? "REAL (1 AU = 50 units)" : "compressed (a^0.45)")}");
     }
 
     protected override void OnUnload()

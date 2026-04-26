@@ -16,8 +16,9 @@ public sealed class Planet
     public double MeanLongitudeDeg { get; init; }
     public double OrbitalPeriodYears { get; init; }
 
-    /// <summary>Visual radius in world units (NOT physical).</summary>
-    public float VisualRadius { get; init; }
+    /// <summary>Visual radius in world units (NOT physical). Mutable so the host can swap
+    /// between an inflated artistic value and a real-scale (km-derived) value at runtime.</summary>
+    public float VisualRadius { get; set; }
     /// <summary>Approximate real radius in km (for UI display).</summary>
     public double RealRadiusKm { get; init; }
     public Vector3 ProceduralColor { get; init; }

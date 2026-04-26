@@ -13,8 +13,17 @@ public sealed class Camera
     public float Pitch = MathHelper.DegreesToRadians(35f);
     public float FovDeg = 55f;
     public float Aspect = 16f / 9f;
-    public float Near = 0.1f;
-    public float Far = 5000f;
+    /// <summary>Smallest distance the user can zoom to (mouse-wheel clamp). Lowered for
+    /// real-scale mode where bodies are sub-unit in size.</summary>
+    public float MinDistance = 2f;
+    public float MaxDistance = 4000f;
+    public float Far = 8000f;
+
+    /// <summary>Near plane is scaled with the current orbit radius so we keep a roughly
+    /// constant near/far ratio across many orders of magnitude of zoom. Without this, a
+    /// fixed 0.1 near plane clips planets long before the camera can get close enough
+    /// to see them in real-scale mode.</summary>
+    public float Near => MathF.Max(0.001f, Distance * 0.002f);
 
     private const float DefaultDistance = 320f;
     private const float DefaultYaw = 0.6f;
@@ -82,6 +91,6 @@ public sealed class Camera
     public void HandleScroll(float dy)
     {
         Distance *= MathF.Pow(0.9f, dy);
-        Distance = Math.Clamp(Distance, 2f, 4000f);
+        Distance = Math.Clamp(Distance, MinDistance, MaxDistance);
     }
 }
