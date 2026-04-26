@@ -7,8 +7,8 @@ namespace SolarSystem;
 /// Periodic eruptions on the Sun's surface. Every few seconds a random spot ignites,
 /// throwing a burst of bright particles outward in a cone. A radial "gravity" pulls
 /// them back, producing arcing prominences that rise, peak, and fall over their
-/// lifetime. Particles are rendered as additively-blended GL points (large near birth,
-/// fading from white-hot to deep orange).
+/// lifetime. Particles are rendered as additively-blended instanced quads (A4),
+/// integrated with fixed sub-steps (A5).
 /// </summary>
 public sealed class SolarFlares : IDisposable
 {
@@ -37,13 +37,17 @@ public sealed class SolarFlares : IDisposable
     /// <summary>Particle lifetime (seconds), randomized 0.6–1.4×.</summary>
     public float Lifetime { get; set; } = 4.5f;
 
+    /// <summary>A5: maximum integration step (seconds).</summary>
+    public float MaxSubStep { get; set; } = 1f / 60f;
+
     private readonly Particle[] _particles;
     private readonly float[] _packed; // {x,y,z,life01}
     private readonly Random _rng = new(7);
     private float _nextBurstIn;
 
-    private int _vao, _vbo;
+    private InstancedQuadParticles _mesh = null!;
     private ShaderProgram _shader = null!;
+    private Vector2 _viewport = new(1280f, 800f);
 
     public SolarFlares(int maxParticles = 4000)
     {
@@ -55,53 +59,22 @@ public sealed class SolarFlares : IDisposable
 
     public void Initialize()
     {
-        _vao = GL.GenVertexArray();
-        _vbo = GL.GenBuffer();
-        GL.BindVertexArray(_vao);
-        GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-        GL.BufferData(BufferTarget.ArrayBuffer, MaxParticles * 4 * sizeof(float),
-            IntPtr.Zero, BufferUsageHint.DynamicDraw);
-        GL.EnableVertexAttribArray(0);
-        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
-        GL.EnableVertexAttribArray(1);
-        GL.VertexAttribPointer(1, 1, VertexAttribPointerType.Float, false, 4 * sizeof(float), 3 * sizeof(float));
-        GL.BindVertexArray(0);
-
-        _shader = new ShaderProgram(Vs, Fs);
+        _mesh = new InstancedQuadParticles(MaxParticles);
+        _mesh.Initialize();
+        _shader = ShaderSources.CreateProgram("particle.vert", "solarflares.frag");
     }
+
+    public void SetViewport(Vector2 viewport) => _viewport = viewport;
 
     public void Update(float dt, Vector3 sunPos, float sunRadius)
     {
-        // Integrate motion + radial gravity back toward Sun.
-        for (int i = 0; i < _particles.Length; i++)
+        if (dt > 0f)
         {
-            ref var p = ref _particles[i];
-            if (p.Life <= 0f) continue;
-            Vector3 toSun = sunPos - p.Pos;
-            float d = toSun.Length;
-            if (d > 1e-4f) p.Vel += (toSun / d) * Gravity * dt;
-            p.Pos += p.Vel * dt;
-            p.Life -= dt;
-            // Particles that crash back below the surface die immediately.
-            if ((p.Pos - sunPos).LengthSquared < sunRadius * sunRadius * 0.95f * 0.95f) p.Life = 0f;
-        }
-
-        // Trigger bursts.
-        if (Enabled)
-        {
-            _nextBurstIn -= dt;
-            while (_nextBurstIn <= 0f)
-            {
-                EmitBurst(sunPos, sunRadius);
-                // Exponential-ish jitter so the rhythm feels organic.
-                float u = (float)_rng.NextDouble();
-                _nextBurstIn += BurstIntervalMean * (0.4f + u * 1.6f);
-            }
-        }
-        else
-        {
-            // Reset timer so re-enabling doesn't dump a backlog of bursts.
-            if (_nextBurstIn < 0.2f) _nextBurstIn = 0.2f;
+            int steps = Math.Max(1, (int)Math.Ceiling(dt / MaxSubStep));
+            steps = Math.Min(steps, 16);
+            float subDt = dt / steps;
+            for (int s = 0; s < steps; s++)
+                Step(subDt, sunPos, sunRadius);
         }
 
         // Pack alive particles tightly.
@@ -117,11 +90,37 @@ public sealed class SolarFlares : IDisposable
             n++;
         }
         ActiveCount = n;
+        _mesh.UploadInstances(_packed, n);
+    }
 
-        if (n > 0)
+    private void Step(float dt, Vector3 sunPos, float sunRadius)
+    {
+        // Integrate motion + radial gravity back toward Sun.
+        for (int i = 0; i < _particles.Length; i++)
         {
-            GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-            GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, n * 4 * sizeof(float), _packed);
+            ref var p = ref _particles[i];
+            if (p.Life <= 0f) continue;
+            Vector3 toSun = sunPos - p.Pos;
+            float d = toSun.Length;
+            if (d > 1e-4f) p.Vel += (toSun / d) * Gravity * dt;
+            p.Pos += p.Vel * dt;
+            p.Life -= dt;
+            if ((p.Pos - sunPos).LengthSquared < sunRadius * sunRadius * 0.95f * 0.95f) p.Life = 0f;
+        }
+
+        if (Enabled)
+        {
+            _nextBurstIn -= dt;
+            while (_nextBurstIn <= 0f)
+            {
+                EmitBurst(sunPos, sunRadius);
+                float u = (float)_rng.NextDouble();
+                _nextBurstIn += BurstIntervalMean * (0.4f + u * 1.6f);
+            }
+        }
+        else
+        {
+            if (_nextBurstIn < 0.2f) _nextBurstIn = 0.2f;
         }
     }
 
@@ -133,7 +132,6 @@ public sealed class SolarFlares : IDisposable
         double s = Math.Sqrt(1.0 - u * u);
         var normal = new Vector3((float)(s * Math.Cos(t)), (float)u, (float)(s * Math.Sin(t)));
 
-        // Build an orthonormal tangent basis for the cone.
         Vector3 helper = MathF.Abs(normal.Y) < 0.99f ? Vector3.UnitY : Vector3.UnitX;
         Vector3 tangent = Vector3.Normalize(Vector3.Cross(helper, normal));
         Vector3 bitangent = Vector3.Cross(normal, tangent);
@@ -147,7 +145,6 @@ public sealed class SolarFlares : IDisposable
             while (idx < _particles.Length && _particles[idx].Life > 0f) idx++;
             if (idx >= _particles.Length) return;
 
-            // Direction = normal tilted within a cone.
             float coneAng = ConeHalfAngle * MathF.Sqrt((float)_rng.NextDouble());
             float az = (float)(_rng.NextDouble() * Math.PI * 2.0);
             Vector3 dir = MathF.Cos(coneAng) * normal +
@@ -176,14 +173,18 @@ public sealed class SolarFlares : IDisposable
         _shader.SetMatrix4("uView", cam.ViewMatrix);
         _shader.SetMatrix4("uProj", cam.ProjectionMatrix);
         _shader.SetFloat("uFcoef", 2.0f / MathF.Log2(cam.Far + 1.0f));
+        _shader.SetVector2("uViewportSize", _viewport);
+        // Legacy: clamp(420/dist, 2, 14) * mix(0.5, 1.6, life). Halved -> radius.
+        _shader.SetFloat("uPxBase", 210f);
+        _shader.SetFloat("uPxMin", 1.0f);
+        _shader.SetFloat("uPxMax", 7.0f);
+        _shader.SetFloat("uLifeLo", 0.5f);
+        _shader.SetFloat("uLifeHi", 1.6f);
 
         GL.Enable(EnableCap.Blend);
         GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One); // additive
         GL.DepthMask(false);
-        GL.Enable(EnableCap.ProgramPointSize);
-        GL.BindVertexArray(_vao);
-        GL.DrawArrays(PrimitiveType.Points, 0, ActiveCount);
-        GL.BindVertexArray(0);
+        _mesh.DrawInstanced(ActiveCount);
         GL.DepthMask(true);
         GL.Disable(EnableCap.Blend);
     }
@@ -191,41 +192,6 @@ public sealed class SolarFlares : IDisposable
     public void Dispose()
     {
         _shader?.Dispose();
-        if (_vbo != 0) GL.DeleteBuffer(_vbo);
-        if (_vao != 0) GL.DeleteVertexArray(_vao);
+        _mesh?.Dispose();
     }
-
-    private const string Vs = @"#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in float aLife01;
-uniform mat4 uView; uniform mat4 uProj;
-uniform float uFcoef;
-out float vLife;
-void main() {
-    vec4 vp = uView * vec4(aPos, 1.0);
-    gl_Position = uProj * vp;
-    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
-    float dist = max(1.0, -vp.z);
-    // Larger than solar wind, and bigger near birth (life01 close to 1).
-    gl_PointSize = clamp(420.0 / dist, 2.0, 14.0) * mix(0.5, 1.6, aLife01);
-    vLife = aLife01;
-}";
-    private const string Fs = @"#version 330 core
-in float vLife;
-out vec4 fragColor;
-void main() {
-    vec2 d = gl_PointCoord - vec2(0.5);
-    float r = length(d);
-    if (r > 0.5) discard;
-    float falloff = 1.0 - r * 2.0;
-    falloff = falloff * falloff;
-    // White-hot core when newborn -> bright orange -> deep red as it cools.
-    vec3 hot   = vec3(1.0, 0.95, 0.75);
-    vec3 mid   = vec3(1.0, 0.55, 0.18);
-    vec3 cool  = vec3(0.65, 0.10, 0.04);
-    vec3 c = mix(cool, mix(mid, hot, smoothstep(0.5, 1.0, vLife)),
-                       smoothstep(0.0, 0.6, vLife));
-    float a = falloff * (0.35 + 0.65 * vLife);
-    fragColor = vec4(c, a);
-}";
 }

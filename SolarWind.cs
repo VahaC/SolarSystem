@@ -5,9 +5,10 @@ namespace SolarSystem;
 
 /// <summary>
 /// CPU-driven particle system that emits points radially outward from the Sun,
-/// fades them over their lifetime, and renders them as additively-blended GL points
-/// with size attenuated by remaining life. A single VAO/VBO pair is reused; the VBO
-/// is updated each frame with only the currently alive particles, packed tightly.
+/// fades them over their lifetime, and renders them as additively-blended billboards
+/// (A4: instanced quads, replacing the legacy GL_POINTS path) with size attenuated
+/// by remaining life. Integration uses fixed sub-steps (A5) so high frame times
+/// don't desync emission or push particles past walls in a single step.
 /// </summary>
 public sealed class SolarWind : IDisposable
 {
@@ -32,13 +33,18 @@ public sealed class SolarWind : IDisposable
     /// <summary>Average particle lifetime (seconds).</summary>
     public float Lifetime { get; set; } = 6f;
 
+    /// <summary>A5: maximum integration step (seconds). Larger frame times are split
+    /// into multiple sub-steps so emission and motion stay frame-rate independent.</summary>
+    public float MaxSubStep { get; set; } = 1f / 60f;
+
     private readonly Particle[] _particles;
     private readonly float[] _packed; // {x,y,z,life01} per active particle
     private float _emitAccumulator;
     private readonly Random _rng = new(1);
 
-    private int _vao, _vbo;
+    private InstancedQuadParticles _mesh = null!;
     private ShaderProgram _shader = null!;
+    private Vector2 _viewport = new(1280f, 800f);
 
     public SolarWind(int maxParticles = 6000)
     {
@@ -49,19 +55,9 @@ public sealed class SolarWind : IDisposable
 
     public void Initialize()
     {
-        _vao = GL.GenVertexArray();
-        _vbo = GL.GenBuffer();
-        GL.BindVertexArray(_vao);
-        GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-        GL.BufferData(BufferTarget.ArrayBuffer, MaxParticles * 4 * sizeof(float),
-            IntPtr.Zero, BufferUsageHint.DynamicDraw);
-        GL.EnableVertexAttribArray(0);
-        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
-        GL.EnableVertexAttribArray(1);
-        GL.VertexAttribPointer(1, 1, VertexAttribPointerType.Float, false, 4 * sizeof(float), 3 * sizeof(float));
-        GL.BindVertexArray(0);
-
-        _shader = new ShaderProgram(Vs, Fs);
+        _mesh = new InstancedQuadParticles(MaxParticles);
+        _mesh.Initialize();
+        _shader = ShaderSources.CreateProgram("particle.vert", "solarwind.frag");
     }
 
     /// <summary>Integrates particle motion and emits new particles when enabled.
@@ -69,28 +65,17 @@ public sealed class SolarWind : IDisposable
     /// is visually graceful instead of cutting them off mid-flight.</summary>
     public void Update(float dt, Vector3 sunPos, float sunRadius)
     {
-        // Integrate motion + age.
-        int alive = 0;
-        for (int i = 0; i < _particles.Length; i++)
+        if (dt > 0f)
         {
-            ref var p = ref _particles[i];
-            if (p.Life <= 0f) continue;
-            p.Pos += p.Vel * dt;
-            p.Life -= dt;
-            if (p.Life <= 0f) continue;
-            alive++;
+            // A5: split the frame into fixed-size sub-steps.
+            int steps = Math.Max(1, (int)Math.Ceiling(dt / MaxSubStep));
+            steps = Math.Min(steps, 16);
+            float subDt = dt / steps;
+            for (int s = 0; s < steps; s++)
+                Step(subDt, sunPos, sunRadius);
         }
 
-        // Emit new particles from a thin shell around the Sun.
-        if (Enabled)
-        {
-            _emitAccumulator += EmissionRate * dt;
-            int toEmit = (int)_emitAccumulator;
-            _emitAccumulator -= toEmit;
-            if (toEmit > 0) EmitBatch(toEmit, sunPos, sunRadius);
-        }
-
-        // Pack alive particles tightly and upload.
+        // Pack alive particles tightly and upload (once per frame).
         int n = 0;
         for (int i = 0; i < _particles.Length; i++)
         {
@@ -103,11 +88,26 @@ public sealed class SolarWind : IDisposable
             n++;
         }
         ActiveCount = n;
+        _mesh.UploadInstances(_packed, n);
+    }
 
-        if (n > 0)
+    private void Step(float dt, Vector3 sunPos, float sunRadius)
+    {
+        // Integrate motion + age.
+        for (int i = 0; i < _particles.Length; i++)
         {
-            GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-            GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, n * 4 * sizeof(float), _packed);
+            ref var p = ref _particles[i];
+            if (p.Life <= 0f) continue;
+            p.Pos += p.Vel * dt;
+            p.Life -= dt;
+        }
+
+        if (Enabled)
+        {
+            _emitAccumulator += EmissionRate * dt;
+            int toEmit = (int)_emitAccumulator;
+            _emitAccumulator -= toEmit;
+            if (toEmit > 0) EmitBatch(toEmit, sunPos, sunRadius);
         }
     }
 
@@ -140,6 +140,10 @@ public sealed class SolarWind : IDisposable
         }
     }
 
+    /// <summary>Inform the renderer about the current viewport dimensions so the
+    /// instanced-quad shader can convert pixel sizes to clip-space offsets.</summary>
+    public void SetViewport(Vector2 viewport) => _viewport = viewport;
+
     public void Draw(Camera cam)
     {
         if (ActiveCount == 0) return;
@@ -148,14 +152,19 @@ public sealed class SolarWind : IDisposable
         _shader.SetMatrix4("uView", cam.ViewMatrix);
         _shader.SetMatrix4("uProj", cam.ProjectionMatrix);
         _shader.SetFloat("uFcoef", 2.0f / MathF.Log2(cam.Far + 1.0f));
+        _shader.SetVector2("uViewportSize", _viewport);
+        // Replicate legacy gl_PointSize tuning: clamp(220/dist,1,6) * mix(0.4,1.4,life).
+        // pxRadius is half of that since the quad corner spans -1..1 (= diameter).
+        _shader.SetFloat("uPxBase", 110f);
+        _shader.SetFloat("uPxMin", 0.5f);
+        _shader.SetFloat("uPxMax", 3.0f);
+        _shader.SetFloat("uLifeLo", 0.4f);
+        _shader.SetFloat("uLifeHi", 1.4f);
 
         GL.Enable(EnableCap.Blend);
         GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One); // additive
         GL.DepthMask(false);
-        GL.Enable(EnableCap.ProgramPointSize);
-        GL.BindVertexArray(_vao);
-        GL.DrawArrays(PrimitiveType.Points, 0, ActiveCount);
-        GL.BindVertexArray(0);
+        _mesh.DrawInstanced(ActiveCount);
         GL.DepthMask(true);
         GL.Disable(EnableCap.Blend);
     }
@@ -163,37 +172,6 @@ public sealed class SolarWind : IDisposable
     public void Dispose()
     {
         _shader?.Dispose();
-        if (_vbo != 0) GL.DeleteBuffer(_vbo);
-        if (_vao != 0) GL.DeleteVertexArray(_vao);
+        _mesh?.Dispose();
     }
-
-    private const string Vs = @"#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in float aLife01;
-uniform mat4 uView; uniform mat4 uProj;
-uniform float uFcoef;
-out float vLife;
-void main() {
-    vec4 vp = uView * vec4(aPos, 1.0);
-    gl_Position = uProj * vp;
-    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
-    // Size attenuates with distance and grows slightly with remaining life.
-    float dist = max(1.0, -vp.z);
-    gl_PointSize = clamp(220.0 / dist, 1.0, 6.0) * mix(0.4, 1.4, aLife01);
-    vLife = aLife01;
-}";
-    private const string Fs = @"#version 330 core
-in float vLife;
-out vec4 fragColor;
-void main() {
-    // Soft round point.
-    vec2 d = gl_PointCoord - vec2(0.5);
-    float r = length(d);
-    if (r > 0.5) discard;
-    float a = (1.0 - r * 2.0);
-    a = a * a * vLife;
-    // Colour shifts from cool yellow at birth to a faint orange-red as it ages.
-    vec3 c = mix(vec3(1.0, 0.45, 0.15), vec3(1.0, 0.95, 0.55), vLife);
-    fragColor = vec4(c, a);
-}";
 }

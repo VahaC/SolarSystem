@@ -7,7 +7,8 @@ namespace SolarSystem;
 /// Static cloud of N asteroids on individual Keplerian orbits between Mars and Jupiter.
 /// Each asteroid's perifocal-to-world basis is precomputed once at construction; per-frame
 /// work is just a Kepler solve + a 2-vector linear combination per asteroid, then the
-/// positions are uploaded to a single VBO and drawn as additively-blended GL_POINTS.
+/// positions are uploaded to a single VBO and drawn as additively-blended instanced
+/// quads (A4, replacing the legacy GL_POINTS path).
 /// </summary>
 public sealed class AsteroidBelt : IDisposable
 {
@@ -29,8 +30,9 @@ public sealed class AsteroidBelt : IDisposable
     private readonly Asteroid[] _asteroids;
     private readonly float[] _packed; // {x,y,z,brightness}
 
-    private int _vao, _vbo;
+    private InstancedQuadParticles _mesh = null!;
     private ShaderProgram _shader = null!;
+    private Vector2 _viewport = new(1280f, 800f);
 
     public AsteroidBelt(int count = 8000, int seed = 1337)
     {
@@ -59,14 +61,10 @@ public sealed class AsteroidBelt : IDisposable
             double cosI = Math.Cos(iRad), sinI = Math.Sin(iRad);
             double cosW = Math.Cos(w), sinW = Math.Sin(w);
 
-            // Same ecliptic-to-GL mapping used in OrbitalMechanics.HeliocentricPosition:
-            //   gl.x =  ecl.x,  gl.y = ecl.z,  gl.z = -ecl.y.
-            // Perifocal basis vectors P (line of nodes rotated by ω) and Q (perpendicular
-            // in the orbital plane) collapsed with the ecliptic→GL swap:
+            // Ecliptic→GL mapping: gl.x = ecl.x, gl.y = ecl.z, gl.z = -ecl.y.
             var Pgl = new Vector3((float)cosOm, 0f, (float)-sinOm);
             var Qgl = new Vector3((float)(-sinOm * cosI), (float)sinI, (float)(-cosOm * cosI));
 
-            // Fold ω into the basis so per-frame we only need (xp, yp) perifocal coords.
             var Ax = (float)cosW * Pgl + (float)sinW * Qgl;
             var Bx = (float)-sinW * Pgl + (float)cosW * Qgl;
 
@@ -89,32 +87,21 @@ public sealed class AsteroidBelt : IDisposable
 
     public void Initialize()
     {
-        _vao = GL.GenVertexArray();
-        _vbo = GL.GenBuffer();
-        GL.BindVertexArray(_vao);
-        GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-        GL.BufferData(BufferTarget.ArrayBuffer, Count * 4 * sizeof(float),
-            IntPtr.Zero, BufferUsageHint.DynamicDraw);
-        GL.EnableVertexAttribArray(0);
-        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
-        GL.EnableVertexAttribArray(1);
-        GL.VertexAttribPointer(1, 1, VertexAttribPointerType.Float, false, 4 * sizeof(float), 3 * sizeof(float));
-        GL.BindVertexArray(0);
-
-        _shader = new ShaderProgram(Vs, Fs);
+        _mesh = new InstancedQuadParticles(Count);
+        _mesh.Initialize();
+        _shader = ShaderSources.CreateProgram("particle.vert", "asteroidbelt.frag");
     }
 
+    public void SetViewport(Vector2 viewport) => _viewport = viewport;
+
     /// <summary>Advance every asteroid's mean anomaly to <paramref name="simDays"/> and
-    /// repack the world positions into the VBO. Same OrbitWorldScale applied uniformly
-    /// so the cloud follows the global compressed/real-scale toggle.</summary>
+    /// repack the world positions into the VBO.</summary>
     public void Update(double simDays)
     {
         for (int i = 0; i < _asteroids.Length; i++)
         {
             ref var a = ref _asteroids[i];
             double M = a.M0 + a.N * simDays;
-            // Inline Newton-Raphson Kepler solver (fewer iterations than the planet
-            // path because eccentricities are small here).
             M %= 2.0 * Math.PI;
             if (M < 0) M += 2.0 * Math.PI;
             double E = a.E < 0.8 ? M : Math.PI;
@@ -130,8 +117,6 @@ public sealed class AsteroidBelt : IDisposable
             float xp = a.A * ((float)Math.Cos(E) - a.E);
             float yp = a.A * a.EFactor * (float)Math.Sin(E);
 
-            // World scale uses the asteroid's own semi-major axis so it's consistent
-            // with planet orbits in compressed mode (uniform a^p mapping).
             float s = OrbitalMechanics.OrbitWorldScale(a.A);
             Vector3 pos = (xp * a.Ax + yp * a.Bx) * s;
 
@@ -141,8 +126,7 @@ public sealed class AsteroidBelt : IDisposable
             // alpha (brightness) preserved
         }
 
-        GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-        GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, Count * 4 * sizeof(float), _packed);
+        _mesh.UploadInstances(_packed, Count);
     }
 
     public void Draw(Camera cam)
@@ -153,14 +137,18 @@ public sealed class AsteroidBelt : IDisposable
         _shader.SetMatrix4("uView", cam.ViewMatrix);
         _shader.SetMatrix4("uProj", cam.ProjectionMatrix);
         _shader.SetFloat("uFcoef", 2.0f / MathF.Log2(cam.Far + 1.0f));
+        _shader.SetVector2("uViewportSize", _viewport);
+        // Legacy: clamp(160/dist, 1, 3.5). Halved -> radius. No life-driven scaling.
+        _shader.SetFloat("uPxBase", 80f);
+        _shader.SetFloat("uPxMin", 0.5f);
+        _shader.SetFloat("uPxMax", 1.75f);
+        _shader.SetFloat("uLifeLo", 1.0f);
+        _shader.SetFloat("uLifeHi", 1.0f);
 
         GL.Enable(EnableCap.Blend);
         GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
         GL.DepthMask(false);
-        GL.Enable(EnableCap.ProgramPointSize);
-        GL.BindVertexArray(_vao);
-        GL.DrawArrays(PrimitiveType.Points, 0, Count);
-        GL.BindVertexArray(0);
+        _mesh.DrawInstanced(Count);
         GL.DepthMask(true);
         GL.Disable(EnableCap.Blend);
     }
@@ -168,30 +156,6 @@ public sealed class AsteroidBelt : IDisposable
     public void Dispose()
     {
         _shader?.Dispose();
-        if (_vbo != 0) GL.DeleteBuffer(_vbo);
-        if (_vao != 0) GL.DeleteVertexArray(_vao);
+        _mesh?.Dispose();
     }
-
-    private const string Vs = @"#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in float aBright;
-uniform mat4 uView; uniform mat4 uProj;
-uniform float uFcoef;
-out float vBright;
-void main(){
-    vec4 vp = uView * vec4(aPos, 1.0);
-    gl_Position = uProj * vp;
-    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
-    float dist = max(1.0, -vp.z);
-    gl_PointSize = clamp(160.0 / dist, 1.0, 3.5);
-    vBright = aBright;
-}";
-    private const string Fs = @"#version 330 core
-in float vBright; out vec4 fragColor;
-void main(){
-    vec2 d = gl_PointCoord - vec2(0.5);
-    if (length(d) > 0.5) discard;
-    // Warm rocky grey-tan, modulated per-asteroid brightness.
-    fragColor = vec4(vec3(0.78, 0.72, 0.62) * vBright, vBright);
-}";
 }

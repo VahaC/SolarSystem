@@ -33,7 +33,7 @@ public sealed class Constellations : IDisposable
 
     public void Initialize()
     {
-        _shader = new ShaderProgram(Vs, Fs);
+        _shader = ShaderSources.CreateProgram("constellation.vert", "constellation.frag");
 
         var data = LoadFromJson();
         var verts = new List<float>(data.Sum(d => d.Lines.Length * 6));
@@ -158,19 +158,5 @@ public sealed class Constellations : IDisposable
         public double[][][] Lines { get; set; } = Array.Empty<double[][]>();
     }
 
-    // Skybox-style line shader. Translation has already been stripped from uView on the
-    // CPU, and gl_Position.z = gl_Position.w forces the line to the far plane so the
-    // constellations always render behind every other 3D body without z-fighting.
-    private const string Vs = @"#version 330 core
-layout(location=0) in vec3 aPos;
-uniform mat4 uView; uniform mat4 uProj;
-void main(){
-    vec4 clip = uProj * uView * vec4(aPos, 1.0);
-    clip.z = clip.w;
-    gl_Position = clip;
-}";
-
-    private const string Fs = @"#version 330 core
-out vec4 fragColor; uniform vec4 uColor;
-void main(){ fragColor = uColor; }";
+    // Skybox-style line shaders live in Resources/Shaders/constellation.{vert,frag}.glsl.
 }

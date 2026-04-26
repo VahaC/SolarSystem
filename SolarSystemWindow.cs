@@ -132,6 +132,14 @@ public sealed class SolarSystemWindow : GameWindow
         _belt.Initialize();
         _comet.Initialize();
         _constellations.Initialize();
+
+        // A4: instanced quad particles size their billboards in clip space using
+        // the current viewport, so push it once now and again on every resize.
+        var initVp = new Vector2(ClientSize.X, ClientSize.Y);
+        _solarWind.SetViewport(initVp);
+        _solarFlares.SetViewport(initVp);
+        _comet.SetViewport(initVp);
+        _belt.SetViewport(initVp);
         _font = new BitmapFont();
 
         _planets = Planet.CreateAll();
@@ -239,6 +247,12 @@ public sealed class SolarSystemWindow : GameWindow
         base.OnResize(e);
         _renderer.FramebufferSize = new Vector2i(e.Width, e.Height);
         _camera.Aspect = e.Width / (float)Math.Max(1, e.Height);
+
+        var vp = new Vector2(e.Width, e.Height);
+        _solarWind.SetViewport(vp);
+        _solarFlares.SetViewport(vp);
+        _comet.SetViewport(vp);
+        _belt.SetViewport(vp);
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)

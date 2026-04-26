@@ -17,6 +17,8 @@
 
   <ItemGroup>
     <PackageReference Include="OpenTK" Version="4.8.2" />
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.8" />
     <PackageReference Include="StbImageSharp" Version="2.27.13" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
   </ItemGroup>
@@ -24,6 +26,7 @@
   <ItemGroup>
     <None Include="textures\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('textures')" />
     <None Include="data\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('data')" />
+    <None Include="Resources\Shaders\**\*.glsl" CopyToOutputDirectory="PreserveNewest" />
     <None Include="solar-system-logo.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('solar-system-logo.png')" />
   </ItemGroup>
 

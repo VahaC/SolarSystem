@@ -6,9 +6,9 @@ namespace SolarSystem;
 /// <summary>
 /// Halley-like comet: a small body on a high-eccentricity Keplerian orbit (e≈0.967,
 /// a≈17.83 AU, i=162°) plus a CPU particle "ion + dust" tail whose particles always
-/// stream away from the Sun. Reuses the planet shader for the nucleus by exposing a
-/// <see cref="Planet"/> instance, but is otherwise self-contained: owns its tail VBO,
-/// shader, RNG and orbit-line VBO.
+/// stream away from the Sun. The tail uses A4's instanced-quad pipeline and A5's
+/// fixed sub-step integration. Reuses the planet shader for the nucleus by exposing
+/// a <see cref="Planet"/> instance.
 /// </summary>
 public sealed class Comet : IDisposable
 {
@@ -32,13 +32,17 @@ public sealed class Comet : IDisposable
     public float Lifetime { get; set; } = 4f;
     public float Speed { get; set; } = 18f;
 
+    /// <summary>A5: maximum integration step (seconds).</summary>
+    public float MaxSubStep { get; set; } = 1f / 60f;
+
     private readonly Particle[] _particles;
     private readonly float[] _packed;
     private float _emitAcc;
     private readonly Random _rng = new(7);
 
-    private int _vao, _vbo;
+    private InstancedQuadParticles _mesh = null!;
     private ShaderProgram _shader = null!;
+    private Vector2 _viewport = new(1280f, 800f);
 
     private int _orbitVao, _orbitVbo, _orbitCount;
 
@@ -71,25 +75,12 @@ public sealed class Comet : IDisposable
 
     public void Initialize()
     {
-        _vao = GL.GenVertexArray();
-        _vbo = GL.GenBuffer();
-        GL.BindVertexArray(_vao);
-        GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-        GL.BufferData(BufferTarget.ArrayBuffer, MaxParticles * 4 * sizeof(float),
-            IntPtr.Zero, BufferUsageHint.DynamicDraw);
-        GL.EnableVertexAttribArray(0);
-        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 4 * sizeof(float), 0);
-        GL.EnableVertexAttribArray(1);
-        GL.VertexAttribPointer(1, 1, VertexAttribPointerType.Float, false, 4 * sizeof(float), 3 * sizeof(float));
-        GL.BindVertexArray(0);
+        _mesh = new InstancedQuadParticles(MaxParticles);
+        _mesh.Initialize();
+        _shader = ShaderSources.CreateProgram("particle.vert", "comettail.frag");
 
-        _shader = new ShaderProgram(Vs, Fs);
-
-        // Build the orbit polyline once. The comet's ellipse is highly eccentric so
-        // sample it densely to keep aphelion arcs smooth.
         BuildOrbit(512);
 
-        // Procedural fallback texture (small icy-grey nucleus).
         Body.TextureId = TextureManager.LoadOrProcedural(
             Body.TextureFile,
             (byte)(Body.ProceduralColor.X * 255),
@@ -97,6 +88,8 @@ public sealed class Comet : IDisposable
             (byte)(Body.ProceduralColor.Z * 255),
             out Body.TextureFromFile);
     }
+
+    public void SetViewport(Vector2 viewport) => _viewport = viewport;
 
     private void BuildOrbit(int samples)
     {
@@ -155,6 +148,33 @@ public sealed class Comet : IDisposable
             Body.HelioAU.Z * Body.HelioAU.Z);
         float activity = (float)Math.Clamp(2.5 / Math.Max(rAU, 0.5), 0.0, 1.0);
 
+        if (dt > 0f)
+        {
+            int steps = Math.Max(1, (int)Math.Ceiling(dt / MaxSubStep));
+            steps = Math.Min(steps, 16);
+            float subDt = dt / steps;
+            for (int s = 0; s < steps; s++)
+                Step(subDt, sunPos, activity);
+        }
+
+        // Pack alive particles tightly.
+        int n = 0;
+        for (int i = 0; i < _particles.Length; i++)
+        {
+            ref var p = ref _particles[i];
+            if (p.Life <= 0f) continue;
+            _packed[n * 4 + 0] = p.Pos.X;
+            _packed[n * 4 + 1] = p.Pos.Y;
+            _packed[n * 4 + 2] = p.Pos.Z;
+            _packed[n * 4 + 3] = MathF.Max(0f, p.Life / p.MaxLife);
+            n++;
+        }
+        ActiveCount = n;
+        _mesh.UploadInstances(_packed, n);
+    }
+
+    private void Step(float dt, Vector3 sunPos, float activity)
+    {
         // Integrate.
         for (int i = 0; i < _particles.Length; i++)
         {
@@ -168,7 +188,6 @@ public sealed class Comet : IDisposable
             p.Life -= dt;
         }
 
-        // Emit.
         if (TailEnabled && activity > 0.01f)
         {
             _emitAcc += EmissionRate * activity * dt;
@@ -185,8 +204,6 @@ public sealed class Comet : IDisposable
                 while (idx < _particles.Length && _particles[idx].Life > 0f) idx++;
                 if (idx >= _particles.Length) break;
 
-                // Cone around the anti-Sun axis: a small random transverse component
-                // gives the tail visible thickness without losing its directional look.
                 double th = _rng.NextDouble() * Math.PI * 2.0;
                 double rr = _rng.NextDouble() * 0.18; // half-cone tan
                 Vector3 t1 = Vector3.Cross(antiSun, MathF.Abs(antiSun.Y) < 0.9f ? Vector3.UnitY : Vector3.UnitX);
@@ -207,26 +224,6 @@ public sealed class Comet : IDisposable
                 };
                 idx++;
             }
-        }
-
-        // Pack alive particles tightly.
-        int n = 0;
-        for (int i = 0; i < _particles.Length; i++)
-        {
-            ref var p = ref _particles[i];
-            if (p.Life <= 0f) continue;
-            _packed[n * 4 + 0] = p.Pos.X;
-            _packed[n * 4 + 1] = p.Pos.Y;
-            _packed[n * 4 + 2] = p.Pos.Z;
-            _packed[n * 4 + 3] = MathF.Max(0f, p.Life / p.MaxLife);
-            n++;
-        }
-        ActiveCount = n;
-
-        if (n > 0)
-        {
-            GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-            GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, n * 4 * sizeof(float), _packed);
         }
     }
 
@@ -256,14 +253,18 @@ public sealed class Comet : IDisposable
         _shader.SetMatrix4("uView", cam.ViewMatrix);
         _shader.SetMatrix4("uProj", cam.ProjectionMatrix);
         _shader.SetFloat("uFcoef", 2.0f / MathF.Log2(cam.Far + 1.0f));
+        _shader.SetVector2("uViewportSize", _viewport);
+        // Legacy: clamp(180/dist, 1, 5) * mix(0.4, 1.4, life). Halved -> radius.
+        _shader.SetFloat("uPxBase", 90f);
+        _shader.SetFloat("uPxMin", 0.5f);
+        _shader.SetFloat("uPxMax", 2.5f);
+        _shader.SetFloat("uLifeLo", 0.4f);
+        _shader.SetFloat("uLifeHi", 1.4f);
 
         GL.Enable(EnableCap.Blend);
         GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
         GL.DepthMask(false);
-        GL.Enable(EnableCap.ProgramPointSize);
-        GL.BindVertexArray(_vao);
-        GL.DrawArrays(PrimitiveType.Points, 0, ActiveCount);
-        GL.BindVertexArray(0);
+        _mesh.DrawInstanced(ActiveCount);
         GL.DepthMask(true);
         GL.Disable(EnableCap.Blend);
     }
@@ -271,36 +272,8 @@ public sealed class Comet : IDisposable
     public void Dispose()
     {
         _shader?.Dispose();
-        if (_vbo != 0) GL.DeleteBuffer(_vbo);
-        if (_vao != 0) GL.DeleteVertexArray(_vao);
+        _mesh?.Dispose();
         if (_orbitVbo != 0) GL.DeleteBuffer(_orbitVbo);
         if (_orbitVao != 0) GL.DeleteVertexArray(_orbitVao);
     }
-
-    private const string Vs = @"#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in float aLife01;
-uniform mat4 uView; uniform mat4 uProj;
-uniform float uFcoef;
-out float vLife;
-void main(){
-    vec4 vp = uView * vec4(aPos, 1.0);
-    gl_Position = uProj * vp;
-    gl_Position.z = (log2(max(1e-6, 1.0 + gl_Position.w)) * uFcoef - 1.0) * gl_Position.w;
-    float dist = max(1.0, -vp.z);
-    gl_PointSize = clamp(180.0 / dist, 1.0, 5.0) * mix(0.4, 1.4, aLife01);
-    vLife = aLife01;
-}";
-    private const string Fs = @"#version 330 core
-in float vLife; out vec4 fragColor;
-void main(){
-    vec2 d = gl_PointCoord - vec2(0.5);
-    float r = length(d);
-    if (r > 0.5) discard;
-    float a = (1.0 - r * 2.0);
-    a = a * a * vLife;
-    // Ion-tail blue at birth fading to a cooler dust-grey as particles age.
-    vec3 c = mix(vec3(0.6, 0.7, 0.85), vec3(0.55, 0.85, 1.15), vLife);
-    fragColor = vec4(c, a);
-}";
 }

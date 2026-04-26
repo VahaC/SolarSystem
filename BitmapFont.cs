@@ -1,24 +1,22 @@
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.Drawing.Text;
-using System.Runtime.Versioning;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
-using GdiPixelFormat = System.Drawing.Imaging.PixelFormat;
+using SkiaSharp;
 using GlPixelFormat = OpenTK.Graphics.OpenGL4.PixelFormat;
 
 namespace SolarSystem;
 
 /// <summary>
-/// Real TrueType font rasterized into an RGBA8 atlas via GDI+. Each glyph is rendered with
-/// anti-aliased gridfit hinting; the alpha channel is the coverage mask. The shader samples
-/// the alpha channel as the glyph mask and tints with a uniform color.
+/// A1: cross-platform TrueType font rasterized into an RGBA8 atlas via SkiaSharp.
+/// Replaces the previous Windows-only GDI+ implementation; SkiaSharp ships native
+/// renderers for Windows / Linux (NoDependencies) / macOS so the same code path
+/// works on every supported runtime.
 ///
-/// Each glyph stores tight pixel bounds inside the atlas, plus the offset from the pen
-/// position and the advance, so text is properly proportional with correct kerning per char.
+/// Each glyph is rendered with anti-aliased subpixel hinting; the alpha channel of
+/// the atlas is the coverage mask. The shader samples that channel and tints with a
+/// uniform colour. Per-glyph metrics (UV box, ink-box pixel size, pen offset and
+/// horizontal advance) are stored so DrawText produces properly proportional text
+/// with kerning correct enough for HUD use.
 /// </summary>
-[SupportedOSPlatform("windows")]
 public sealed class BitmapFont : IDisposable
 {
     public readonly struct Glyph
@@ -54,33 +52,40 @@ public sealed class BitmapFont : IDisposable
         AtlasH = atlasH;
         _glyphs = new Dictionary<char, Glyph>(128);
 
-        FontFamily family;
-        try { family = new FontFamily(fontFamily); }
-        catch { family = FontFamily.GenericSansSerif; }
+        // Resolve the typeface. We try the requested family first; if the platform
+        // doesn't have it (common on Linux when asking for "Segoe UI"), fall through
+        // to a couple of well-known cross-platform sans-serif families and finally
+        // SkiaSharp's default. Skia returns a non-null typeface even for unknown
+        // names — it picks the platform default — so this chain is mostly cosmetic.
+        SKTypeface? typeface =
+            SKTypeface.FromFamilyName(fontFamily) ??
+            SKTypeface.FromFamilyName("Segoe UI") ??
+            SKTypeface.FromFamilyName("DejaVu Sans") ??
+            SKTypeface.FromFamilyName("Arial") ??
+            SKTypeface.Default;
 
-        using (family)
-        using (var font = new Font(family, fontPixelSize, FontStyle.Regular, GraphicsUnit.Pixel))
-        using (var atlas = new Bitmap(AtlasW, AtlasH, GdiPixelFormat.Format32bppArgb))
-        using (var atlasG = Graphics.FromImage(atlas))
+        using (typeface)
+        using (var font = new SKFont(typeface, fontPixelSize) { Edging = SKFontEdging.SubpixelAntialias, Hinting = SKFontHinting.Normal })
+        using (var paint = new SKPaint(font) { IsAntialias = true, Color = SKColors.White, TextSize = fontPixelSize })
+        using (var atlas = new SKBitmap(new SKImageInfo(AtlasW, AtlasH, SKColorType.Rgba8888, SKAlphaType.Premul)))
+        using (var atlasCanvas = new SKCanvas(atlas))
         {
-            atlasG.Clear(Color.Transparent);
-            LineHeight = font.GetHeight(atlasG);
+            atlasCanvas.Clear(SKColors.Transparent);
 
-            // Scratch bitmap for rendering one glyph at a time, then we scan the alpha
-            // channel for the tight ink box and copy that sub-rect into the atlas.
+            var metrics = font.Metrics;
+            // SKFont metrics use signed values (descent positive, ascent negative).
+            LineHeight = metrics.Descent - metrics.Ascent + metrics.Leading;
+            if (LineHeight <= 0f) LineHeight = fontPixelSize * 1.25f;
+
+            // Scratch bitmap for rendering one glyph at a time, then we scan its
+            // alpha channel for the tight ink box and copy that sub-rect into the atlas.
             int scratchW = (int)Math.Ceiling(fontPixelSize * 2.5f) + 8;
-            int scratchH = (int)Math.Ceiling(fontPixelSize * 2.0f) + 8;
-            using var scratch = new Bitmap(scratchW, scratchH, GdiPixelFormat.Format32bppArgb);
-            using var scratchG = Graphics.FromImage(scratch);
-            scratchG.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            scratchG.SmoothingMode = SmoothingMode.AntiAlias;
+            int scratchH = (int)Math.Ceiling(fontPixelSize * 2.5f) + 8;
+            using var scratch = new SKBitmap(new SKImageInfo(scratchW, scratchH, SKColorType.Rgba8888, SKAlphaType.Premul));
+            using var scratchCanvas = new SKCanvas(scratch);
 
-            // GenericTypographic gives much tighter / saner advance values than the default.
-            var sf = (StringFormat)StringFormat.GenericTypographic.Clone();
-            sf.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
-            using var brush = new SolidBrush(Color.White);
-
-            int penX = 4, penY = 4;
+            int penX = 4;
+            int penY = (int)Math.Ceiling(-metrics.Ascent) + 4;
 
             // Simple shelf packer.
             int curX = 1, curY = 1, rowH = 0;
@@ -90,21 +95,15 @@ public sealed class BitmapFont : IDisposable
                 char ch = (char)code;
                 string s = ch.ToString();
 
-                // Advance from typographic measurement.
-                SizeF measured = scratchG.MeasureString(s, font, PointF.Empty, sf);
-                float advance = measured.Width;
-                if (advance <= 0) advance = fontPixelSize * 0.5f; // sane fallback for whitespace
+                // SKPaint.MeasureText(string) is the cross-version-stable string overload.
+                float advance = paint.MeasureText(s);
+                if (advance <= 0) advance = fontPixelSize * 0.5f;
 
-                // Render glyph.
-                scratchG.CompositingMode = CompositingMode.SourceCopy;
-                scratchG.Clear(Color.Transparent);
-                scratchG.CompositingMode = CompositingMode.SourceOver;
-                scratchG.DrawString(s, font, brush, penX, penY, sf);
+                scratchCanvas.Clear(SKColors.Transparent);
+                scratchCanvas.DrawText(s, penX, penY, paint);
 
-                // Find tight ink box by scanning alpha.
                 if (!FindAlphaBounds(scratch, out int minX, out int minY, out int maxX, out int maxY))
                 {
-                    // Empty glyph (space etc.).
                     _glyphs[ch] = new Glyph(Vector4.Zero, Vector2.Zero, Vector2.Zero, advance);
                     continue;
                 }
@@ -112,7 +111,6 @@ public sealed class BitmapFont : IDisposable
                 int gw = maxX - minX + 1;
                 int gh = maxY - minY + 1;
 
-                // Pack: new shelf if not enough horizontal space.
                 if (curX + gw + 1 > AtlasW)
                 {
                     curX = 1;
@@ -120,15 +118,14 @@ public sealed class BitmapFont : IDisposable
                     rowH = 0;
                 }
                 if (curY + gh + 1 > AtlasH)
-                    break; // Atlas full; stop adding glyphs.
+                    break;
 
                 if (gh > rowH) rowH = gh;
 
-                // Copy ink box from scratch into atlas.
-                var srcRect = new Rectangle(minX, minY, gw, gh);
-                var dstRect = new Rectangle(curX, curY, gw, gh);
-                atlasG.CompositingMode = CompositingMode.SourceCopy;
-                atlasG.DrawImage(scratch, dstRect, srcRect, GraphicsUnit.Pixel);
+                // Copy the ink box from scratch into the atlas.
+                var srcRect = new SKRectI(minX, minY, maxX + 1, maxY + 1);
+                var dstRect = new SKRect(curX, curY, curX + gw, curY + gh);
+                atlasCanvas.DrawBitmap(scratch, srcRect, dstRect);
 
                 _glyphs[ch] = new Glyph(
                     new Vector4(curX / (float)AtlasW, curY / (float)AtlasH,
@@ -140,28 +137,14 @@ public sealed class BitmapFont : IDisposable
                 curX += gw + 1;
             }
 
-            sf.Dispose();
-
-            // Upload to GL.
-            var data = atlas.LockBits(new Rectangle(0, 0, AtlasW, AtlasH),
-                ImageLockMode.ReadOnly, GdiPixelFormat.Format32bppArgb);
-            try
-            {
-                Texture = GL.GenTexture();
-                GL.BindTexture(TextureTarget.Texture2D, Texture);
-                GL.PixelStore(PixelStoreParameter.UnpackAlignment, 4);
-                GL.PixelStore(PixelStoreParameter.UnpackRowLength, data.Stride / 4);
-                // GDI+ Format32bppArgb is BGRA in memory on little-endian.
-                GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8,
-                    AtlasW, AtlasH, 0,
-                    GlPixelFormat.Bgra,
-                    PixelType.UnsignedByte, data.Scan0);
-                GL.PixelStore(PixelStoreParameter.UnpackRowLength, 0);
-            }
-            finally
-            {
-                atlas.UnlockBits(data);
-            }
+            // Upload the atlas to GL. SkiaSharp gives us tightly-packed RGBA8 pixels.
+            atlasCanvas.Flush();
+            byte[] pixels = atlas.Bytes;
+            Texture = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, Texture);
+            GL.PixelStore(PixelStoreParameter.UnpackAlignment, 4);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8,
+                AtlasW, AtlasH, 0, GlPixelFormat.Rgba, PixelType.UnsignedByte, pixels);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
@@ -178,36 +161,29 @@ public sealed class BitmapFont : IDisposable
 
     public Glyph GetGlyph(char c) => _glyphs.TryGetValue(c, out var g) ? g : _fallback;
 
-    private static unsafe bool FindAlphaBounds(Bitmap bmp, out int minX, out int minY, out int maxX, out int maxY)
+    private static unsafe bool FindAlphaBounds(SKBitmap bmp, out int minX, out int minY, out int maxX, out int maxY)
     {
-        var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
-            ImageLockMode.ReadOnly, GdiPixelFormat.Format32bppArgb);
-        try
+        int w = bmp.Width, h = bmp.Height;
+        int rowBytes = bmp.RowBytes;
+        byte* basep = (byte*)bmp.GetPixels();
+        minX = w; minY = h; maxX = -1; maxY = -1;
+        for (int y = 0; y < h; y++)
         {
-            int w = bmp.Width, h = bmp.Height, stride = data.Stride;
-            byte* basep = (byte*)data.Scan0;
-            minX = w; minY = h; maxX = -1; maxY = -1;
-            for (int y = 0; y < h; y++)
+            byte* row = basep + y * rowBytes;
+            for (int x = 0; x < w; x++)
             {
-                byte* row = basep + y * stride;
-                for (int x = 0; x < w; x++)
+                // SkiaSharp Rgba8888: bytes are R,G,B,A.
+                byte a = row[x * 4 + 3];
+                if (a > 8)
                 {
-                    byte a = row[x * 4 + 3]; // BGRA -> alpha at +3
-                    if (a > 8)
-                    {
-                        if (x < minX) minX = x;
-                        if (y < minY) minY = y;
-                        if (x > maxX) maxX = x;
-                        if (y > maxY) maxY = y;
-                    }
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
                 }
             }
-            return maxX >= minX && maxY >= minY;
         }
-        finally
-        {
-            bmp.UnlockBits(data);
-        }
+        return maxX >= minX && maxY >= minY;
     }
 
     public void Dispose() => GL.DeleteTexture(Texture);
