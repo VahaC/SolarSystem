@@ -43,6 +43,10 @@ public sealed class Planet
     public int NightTextureId;
     /// <summary>Optional cloud layer texture (e.g. Earth clouds). 0 = none.</summary>
     public int CloudTextureId;
+    /// <summary>V15: optional specular / ocean mask (white = water, black = land).
+    /// When non-zero the planet shader gates its specular term by this texture so
+    /// only oceans glint. 0 = none → uniform glint across the entire surface.</summary>
+    public int OceanMaskTextureId;
     /// <summary>Independent rotation angle for the cloud layer so it can drift relative
     /// to the surface. Updated per frame by <see cref="SolarSystemWindow"/>.</summary>
     public float CloudRotationAngleRad;

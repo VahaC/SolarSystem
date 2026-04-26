@@ -1,5 +1,6 @@
 ﻿using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
+using OpenTK.Windowing.GraphicsLibraryFramework;
 
 namespace SolarSystem;
 
@@ -47,7 +48,42 @@ public sealed class Renderer : IDisposable
     private ShaderProgram _brightShader = null!;
     private ShaderProgram _blurShader = null!;
     private ShaderProgram _compositeShader = null!;
+    private ShaderProgram _fxaaShader = null!;
+    // V11: LDR target the composite renders into when FXAA is enabled. The FXAA
+    // pass then samples this and writes to the default framebuffer.
+    private int _ldrFbo, _ldrTex;
     public bool BloomEnabled { get; set; } = true;
+    /// <summary>V10: linear exposure multiplier applied before ACES tone mapping.
+    /// 1.0 keeps the original brightness; lower values darken, higher brighten.</summary>
+    public float Exposure { get; set; } = 1.0f;
+    /// <summary>V10: when true the composite pass samples the 1x1 mip of the HDR
+    /// scene to estimate average luminance and corrects exposure toward middle grey.</summary>
+    public bool AutoExposureEnabled { get; set; } = true;
+    /// <summary>V11: enables a fullscreen FXAA pass after composite. Cheap (~1ms)
+    /// and kills sub-pixel shimmer in real-scale mode.</summary>
+    public bool FxaaEnabled { get; set; } = true;
+    /// <summary>V9: master toggle for the per-body atmospheric rim glow. When off,
+    /// every planet renders without Rayleigh/Mie scattering regardless of its
+    /// per-body coefficients.</summary>
+    public bool AtmosphereEnabled { get; set; } = true;
+    /// <summary>V8: master toggle for body-vs-body eclipse shadows. When off the
+    /// shadow caster list is ignored even if it was uploaded for the frame.</summary>
+    public bool EclipsesEnabled { get; set; } = true;
+    /// <summary>V12: animate the Sun disc with a 3D fbm granulation field. Off keeps
+    /// the Sun a static texture.</summary>
+    public bool CoronaEnabled { get; set; } = true;
+    /// <summary>V14: enable Cook-Torrance GGX shading on planets (per-body
+    /// roughness/metallic). Off falls back to the legacy Phong specular term.</summary>
+    public bool PbrEnabled { get; set; } = true;
+    /// <summary>V15: when off the planet shader ignores the ocean mask and lets the
+    /// whole surface glint uniformly (legacy look).</summary>
+    public bool OceanMaskEnabled { get; set; } = true;
+
+    // V8: shadow casters (xyz=center, w=radius). Uploaded once per frame and
+    // consumed by every subsequent DrawPlanet call until cleared / overwritten.
+    private const int MaxShadowCasters = 16;
+    private readonly float[] _shadowSphereData = new float[MaxShadowCasters * 4];
+    private int _shadowCount;
 
     public Vector2i FramebufferSize { get; set; } = new(1280, 800);
 
@@ -479,8 +515,26 @@ public sealed class Renderer : IDisposable
         }
         int finalBloom = srcTex;
 
-        // 3. Composite HDR scene + blurred bloom into the default framebuffer.
-        GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        // V10: regenerate the HDR mipmap chain so the composite shader can sample
+        // the 1x1 mip for auto-exposure. Cheap on a half-float framebuffer.
+        if (AutoExposureEnabled)
+        {
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, _hdrColor);
+            GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
+        }
+
+        // 3. Composite HDR scene + blurred bloom + ACES tone-map. When FXAA is on
+        // we render to the LDR target; otherwise straight to the default framebuffer.
+        bool fxaa = FxaaEnabled;
+        if (fxaa)
+        {
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, _ldrFbo);
+        }
+        else
+        {
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        }
         GL.Viewport(0, 0, _ppWidth, _ppHeight);
         GL.Clear(ClearBufferMask.ColorBufferBit);
         _compositeShader.Use();
@@ -491,13 +545,46 @@ public sealed class Renderer : IDisposable
         GL.BindTexture(TextureTarget.Texture2D, finalBloom);
         _compositeShader.SetInt("uBloom", 1);
         _compositeShader.SetFloat("uBloomStrength", 1.1f);
+        _compositeShader.SetFloat("uExposure", Exposure);
+        _compositeShader.SetInt("uAutoExposure", AutoExposureEnabled ? 1 : 0);
         GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+
+        // V11: FXAA from the LDR target into the default framebuffer.
+        if (fxaa)
+        {
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            GL.Viewport(0, 0, _ppWidth, _ppHeight);
+            GL.Clear(ClearBufferMask.ColorBufferBit);
+            _fxaaShader.Use();
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, _ldrTex);
+            _fxaaShader.SetInt("uTex", 0);
+            _fxaaShader.SetVector2("uTexel", new Vector2(1f / _ppWidth, 1f / _ppHeight));
+            GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        }
         GL.BindVertexArray(0);
         GL.ActiveTexture(TextureUnit.Texture0);
 
         GL.Enable(EnableCap.CullFace);
         GL.Enable(EnableCap.DepthTest);
         GL.DepthMask(true);
+    }
+
+    /// <summary>V8: uploads a list of opaque body bounding spheres consumed by
+    /// every subsequent <see cref="DrawPlanet"/> call's eclipse loop. Pass
+    /// `count = 0` to disable shadows. Centers are world-space; radii match the
+    /// body's <c>VisualRadius</c>.</summary>
+    public void SetShadowCasters(ReadOnlySpan<Vector4> spheres)
+    {
+        int n = Math.Min(spheres.Length, MaxShadowCasters);
+        for (int i = 0; i < n; i++)
+        {
+            _shadowSphereData[i * 4 + 0] = spheres[i].X;
+            _shadowSphereData[i * 4 + 1] = spheres[i].Y;
+            _shadowSphereData[i * 4 + 2] = spheres[i].Z;
+            _shadowSphereData[i * 4 + 3] = spheres[i].W;
+        }
+        _shadowCount = n;
     }
 
     private void EnsurePostProcessTargets()
@@ -517,10 +604,13 @@ public sealed class Renderer : IDisposable
         GL.BindTexture(TextureTarget.Texture2D, _hdrColor);
         GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba16f,
             _ppWidth, _ppHeight, 0, PixelFormat.Rgba, PixelType.HalfFloat, IntPtr.Zero);
-        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+        // V10: mipmap-complete so the composite shader can sample the 1x1 mip
+        // for auto-exposure. Mips are regenerated each frame in EndSceneAndApplyBloom.
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+        GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
 
         GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _hdrDepth);
         GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
@@ -537,6 +627,19 @@ public sealed class Renderer : IDisposable
 
         InitBloomTarget(_bloomFboA, _bloomTexA, bw, bh);
         InitBloomTarget(_bloomFboB, _bloomTexB, bw, bh);
+
+        // V11: LDR target for the composite output when FXAA is enabled.
+        if (_ldrFbo == 0) { _ldrFbo = GL.GenFramebuffer(); _ldrTex = GL.GenTexture(); }
+        GL.BindTexture(TextureTarget.Texture2D, _ldrTex);
+        GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8,
+            _ppWidth, _ppHeight, 0, PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+        GL.BindFramebuffer(FramebufferTarget.Framebuffer, _ldrFbo);
+        GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, _ldrTex, 0);
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
@@ -613,6 +716,9 @@ public sealed class Renderer : IDisposable
         _sunShader.SetVector2("uViewportSize", new Vector2(FramebufferSize.X, FramebufferSize.Y));
         _sunShader.SetFloat("uMinPixelRadius", MinPixelRadius);
         _sunShader.SetVector3("uColor", new Vector3(1.0f, 0.85f, 0.45f));
+        // V12: animate granulation. uTime in seconds, uCorona toggles the noise field.
+        _sunShader.SetFloat("uTime", (float)GLFW.GetTime());
+        _sunShader.SetInt("uCorona", CoronaEnabled ? 1 : 0);
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindTexture(TextureTarget.Texture2D, _sunTexture);
         _sunShader.SetInt("uTex", 0);
@@ -693,10 +799,76 @@ public sealed class Renderer : IDisposable
             _planetShader.SetFloat("uRingInner", p.VisualRadius * 1.35f);
             _planetShader.SetFloat("uRingOuter", p.VisualRadius * 2.4f);
         }
+
+        // V8: eclipse / body-shadow casters. The list was uploaded once per frame
+        // via SetShadowCasters; the shader skips the body matching uPlanetCenter.
+        int shadowCount = EclipsesEnabled ? _shadowCount : 0;
+        _planetShader.SetInt("uShadowCount", shadowCount);
+        if (shadowCount > 0)
+            _planetShader.SetVector4Array("uShadowSpheres", _shadowSphereData, shadowCount);
+
+        // V15: ocean / specular mask on TU3. uHasOceanMask = 0 → uniform glint.
+        GL.ActiveTexture(TextureUnit.Texture3);
+        GL.BindTexture(TextureTarget.Texture2D, p.OceanMaskTextureId);
+        _planetShader.SetInt("uOceanMask", 3);
+        _planetShader.SetInt("uHasOceanMask",
+            (OceanMaskEnabled && p.OceanMaskTextureId != 0) ? 1 : 0);
+
+        // V14: per-body PBR coefficients. PbrEnabled = 0 falls back to Phong in-shader.
+        GetPbr(p.Name, out float roughness, out float metallic);
+        _planetShader.SetInt("uPbrEnabled", PbrEnabled ? 1 : 0);
+        _planetShader.SetFloat("uRoughness", roughness);
+        _planetShader.SetFloat("uMetallic", metallic);
+
+        // V9: per-body atmosphere coefficients. Earth, Mars, Venus, Titan and
+        // Neptune get a Rayleigh+Mie rim glow; everything else stays opaque.
+        GetAtmosphere(p.Name, out bool hasAtm, out Vector3 atmColor, out float atmStrength);
+        if (!AtmosphereEnabled) hasAtm = false;
+        _planetShader.SetInt("uHasAtmosphere", hasAtm ? 1 : 0);
+        if (hasAtm)
+        {
+            _planetShader.SetVector3("uAtmosphereColor", atmColor);
+            _planetShader.SetFloat("uAtmosphereStrength", atmStrength);
+        }
+
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindVertexArray(_sphereVao);
         GL.DrawElements(PrimitiveType.Triangles, _sphereIndexCount, DrawElementsType.UnsignedInt, 0);
         GL.BindVertexArray(0);
+    }
+
+    /// <summary>V14: per-body GGX roughness / metallic. Tuned by feel:
+    /// gas giants are smoother (cleaner specular lobes), rocky bodies rougher,
+    /// the Moon nearly Lambertian. Metallic stays near 0 except for tiny hints
+    /// on Mercury/Moon to shift their grey toward a cooler reflectance.</summary>
+    private static void GetPbr(string name, out float roughness, out float metallic)
+    {
+        switch (name)
+        {
+            case "Mercury": roughness = 0.85f; metallic = 0.10f; return;
+            case "Venus":   roughness = 0.55f; metallic = 0.00f; return;
+            case "Earth":   roughness = 0.45f; metallic = 0.00f; return;
+            case "Mars":    roughness = 0.80f; metallic = 0.05f; return;
+            case "Jupiter": roughness = 0.65f; metallic = 0.00f; return;
+            case "Saturn":  roughness = 0.60f; metallic = 0.00f; return;
+            case "Uranus":  roughness = 0.40f; metallic = 0.00f; return;
+            case "Neptune": roughness = 0.40f; metallic = 0.00f; return;
+            case "Moon":    roughness = 0.95f; metallic = 0.05f; return;
+            default:        roughness = 0.70f; metallic = 0.00f; return;
+        }
+    }
+
+    private static void GetAtmosphere(string name, out bool has, out Vector3 color, out float strength)
+    {
+        switch (name)
+        {
+            case "Earth":   has = true; color = new Vector3(0.30f, 0.55f, 1.00f); strength = 1.00f; return;
+            case "Mars":    has = true; color = new Vector3(0.95f, 0.55f, 0.35f); strength = 0.40f; return;
+            case "Venus":   has = true; color = new Vector3(0.95f, 0.85f, 0.55f); strength = 0.70f; return;
+            case "Titan":   has = true; color = new Vector3(0.95f, 0.65f, 0.30f); strength = 0.65f; return;
+            case "Neptune": has = true; color = new Vector3(0.30f, 0.45f, 0.90f); strength = 0.55f; return;
+            default:        has = false; color = Vector3.Zero; strength = 0f; return;
+        }
     }
 
     /// <summary>V3: draws a slightly-larger alpha-blended cloud sphere around
@@ -905,6 +1077,7 @@ public sealed class Renderer : IDisposable
         // A2: every shader source ships as Resources/Shaders/*.glsl. The planet VS
         // is reused by the Sun and cloud passes (only the FS differs).
         _planetShader    = ShaderSources.CreateProgram("planet.vert",  "planet.frag");
+        _fxaaShader      = ShaderSources.CreateProgram("post.vert",    "fxaa.frag");
         _sunShader       = ShaderSources.CreateProgram("planet.vert",  "sun.frag");
         _orbitShader     = ShaderSources.CreateProgram("orbit.vert",   "orbit.frag");
         _starShader      = ShaderSources.CreateProgram("star.vert",    "star.frag");
@@ -936,6 +1109,7 @@ public sealed class Renderer : IDisposable
         _brightShader?.Dispose();
         _blurShader?.Dispose();
         _compositeShader?.Dispose();
+        _fxaaShader?.Dispose();
         GL.DeleteVertexArray(_sphereVao); GL.DeleteBuffer(_sphereVbo); GL.DeleteBuffer(_sphereEbo);
         GL.DeleteVertexArray(_orbitVao); GL.DeleteBuffer(_orbitVbo);
         GL.DeleteVertexArray(_starVao); GL.DeleteBuffer(_starVbo);
@@ -954,5 +1128,7 @@ public sealed class Renderer : IDisposable
         if (_bloomFboB != 0) GL.DeleteFramebuffer(_bloomFboB);
         if (_bloomTexA != 0) GL.DeleteTexture(_bloomTexA);
         if (_bloomTexB != 0) GL.DeleteTexture(_bloomTexB);
+        if (_ldrFbo != 0) GL.DeleteFramebuffer(_ldrFbo);
+        if (_ldrTex != 0) GL.DeleteTexture(_ldrTex);
     }
 }

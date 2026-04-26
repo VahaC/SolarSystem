@@ -25,6 +25,10 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **Earth night-side city lights** — emissive nightmap added to the dark hemisphere via `1 − smoothstep(-0.05, 0.2, NdotL)`; smoothly fades across the terminator.
 - **Saturn's rings + mutual shadow** — alpha-blended texture ring, properly tilted with the planet. The `PlanetFS` casts a ray from each lit Saturn fragment toward the Sun and attenuates lighting by the ring's per-radius opacity; the `RingFS` does the inverse ray-vs-sphere test so Saturn's shadow falls on the rings.
 - **Lens flare** — screen-space additive ghosts along the Sun→centre axis when the Sun is roughly looked-at; fades with NDC distance and view alignment.
+- **Sun corona / granulation** — `sun.frag` runs a 4-octave fbm of the world-space normal (drifting in time) plus a low-frequency pulse, so the disc breathes with hot/cool granules instead of staying a static texture.
+- **Polar auroras** — additive ribbon mesh at Earth (green) and Jupiter (magenta/violet) poles, with curtain waves + per-vertex shimmer animated against `GLFW.GetTime()`; intensity boosted while the solar wind is on, and the bright crests feed the bloom pass.
+- **PBR planet shading** — Cook-Torrance / GGX with Schlick-GGX G, Schlick F and per-body roughness/metallic constants (gas giants smoother, rocky bodies rougher, the Moon nearly Lambertian); legacy Phong lobe remains as the off-fallback.
+- **Specular ocean mask** — Earth's `8k_earth_specular_map.{png,jpg,tif}` (TU3) gates the specular term so only oceans glint while continents stay matte.
 - **Solar wind & flares** — instanced-quad particle systems streaming radially from the Sun (yellow→orange) and erupting sprites that feed the bloom pass.
 - **Equirectangular Milky Way sky** when `8k_stars_milky_way.jpg` is present (procedural starfield otherwise).
 - **Adaptive star brightness/saturation** — sky shader is dimmed in deep space and saturation-boosted close to a body, so the panorama doesn't drown out distant planets.
@@ -83,6 +87,10 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 | **Ctrl+F** | Search bodies by name |
 | **F12** | Screenshot to `screenshots/` (Windows) |
 | **~** | Toggle FPS / particle-count HUD |
+| **U** | Toggle sun corona / granulation (V12) |
+| **K** | Toggle polar aurora ribbons (V13) |
+| **I** | Toggle PBR planet shading (V14) |
+| **Q** | Toggle ocean specular mask (V15) |
 | **Esc** | Quit |
 
 ---

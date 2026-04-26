@@ -40,6 +40,8 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly LagrangePoints _lagrange = new();
     private readonly MeteorShowers _meteors = new();
     private readonly Bookmarks _bookmarks = new();
+    // V13.
+    private readonly Aurora _aurora = new();
     private BitmapFont _font = null!;
     /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
     /// are the IAU dwarf planets appended by <see cref="Planet.CreateDwarfPlanets"/>.
@@ -111,6 +113,8 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showProbes = true;
     private bool _showLagrange;
     private bool _showMeteors = true;
+    /// <summary>V13: master toggle for the polar aurora ribbons (Earth + Jupiter).</summary>
+    private bool _showAurora = true;
     /// <summary>R4: when true each planet's spin angle is evaluated at
     /// <c>simDays - r/c</c> (where r is its heliocentric distance), so the day/night
     /// terminator falls where it was when the photons currently illuminating it
@@ -153,6 +157,7 @@ public sealed class SolarSystemWindow : GameWindow
         _probes.Initialize();
         _lagrange.Initialize();
         _meteors.Initialize();
+        _aurora.Initialize();
 
         // A4: instanced quad particles size their billboards in clip space using
         // the current viewport, so push it once now and again on every resize.
@@ -192,6 +197,11 @@ public sealed class SolarSystemWindow : GameWindow
                     p.CloudTextureId = clouds;
                 if (TextureManager.TryLoadFile("8k_earth_nightmap.jpg", out int night))
                     p.NightTextureId = night;
+                // V15: ocean / specular mask. Either filename works.
+                if (TextureManager.TryLoadFile("8k_earth_specular_map.png", out int spec)
+                    || TextureManager.TryLoadFile("8k_earth_specular_map.jpg", out spec)
+                    || TextureManager.TryLoadFile("8k_earth_specular_map.tif", out spec))
+                    p.OceanMaskTextureId = spec;
                 break;
             }
         }
@@ -600,6 +610,54 @@ public sealed class SolarSystemWindow : GameWindow
                 _seekFeedbackUntil = GLFW.GetTime() + 2.5;
                 break;
 
+            // V8/V9/V10/V11: master toggles for the post-FX added in those passes.
+            case Keys.H:
+                _renderer.EclipsesEnabled = !_renderer.EclipsesEnabled;
+                _seekFeedback = $"Eclipses: {(_renderer.EclipsesEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.N:
+                _renderer.AtmosphereEnabled = !_renderer.AtmosphereEnabled;
+                _seekFeedback = $"Atmosphere: {(_renderer.AtmosphereEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.E:
+                _renderer.AutoExposureEnabled = !_renderer.AutoExposureEnabled;
+                _seekFeedback = $"Auto-exposure: {(_renderer.AutoExposureEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.X:
+                _renderer.FxaaEnabled = !_renderer.FxaaEnabled;
+                _seekFeedback = $"FXAA: {(_renderer.FxaaEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.U:
+                _renderer.CoronaEnabled = !_renderer.CoronaEnabled;
+                _seekFeedback = $"Sun corona (V12): {(_renderer.CoronaEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.K:
+                _showAurora = !_showAurora;
+                _aurora.Enabled = _showAurora;
+                _seekFeedback = $"Aurora (V13): {(_showAurora ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.I:
+                _renderer.PbrEnabled = !_renderer.PbrEnabled;
+                _seekFeedback = $"PBR shading (V14): {(_renderer.PbrEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.Q:
+                _renderer.OceanMaskEnabled = !_renderer.OceanMaskEnabled;
+                _seekFeedback = $"Ocean specular (V15): {(_renderer.OceanMaskEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.B:
+                _renderer.BloomEnabled = !_renderer.BloomEnabled;
+                _seekFeedback = $"Bloom: {(_renderer.BloomEnabled ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+
             // Q7: HUD overlay (FPS + particle counts).
             case Keys.GraveAccent: _showHud = !_showHud; break;
 
@@ -664,6 +722,10 @@ public sealed class SolarSystemWindow : GameWindow
         // slice in one place so every render pass sees a consistent view.
         Planet[] visible = _showDwarfs ? _planets : _majorPlanets;
 
+        // V8: build the shadow caster list (planets + Moon + Galileans + Titan).
+        // The Sun is the light source so it never casts. Capped at 16 by the renderer.
+        BuildShadowCasters(visible);
+
         // R3: adaptive star brightness + saturation. Far from the Sun the Milky
         // Way is dimmed so distant planets aren't drowned by the panorama; close
         // to a planet the colour is punched up for a "near-orbit" feel.
@@ -707,6 +769,21 @@ public sealed class SolarSystemWindow : GameWindow
         if (_showMeteors) _meteors.Draw(_camera);
 
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, visible);
+
+        // V13: aurora ribbons at Earth + Jupiter poles. Drawn inside the HDR pass
+        // so the bright crests feed the bloom composite. Intensity is boosted when
+        // the solar wind is on ("strong solar activity").
+        if (_showAurora)
+        {
+            float t = (float)GLFW.GetTime();
+            float wind = _solarWind.Enabled ? 1.0f : 0.5f;
+            var earth = _planets[2];
+            _aurora.DrawForBody(_camera, earth.Position, earth.VisualRadius, earth.AxisTiltDeg,
+                new Vector4(0.30f, 1.00f, 0.55f, 0.80f), 1.0f * wind, t);
+            var jupiter = _planets[4];
+            _aurora.DrawForBody(_camera, jupiter.Position, jupiter.VisualRadius, jupiter.AxisTiltDeg,
+                new Vector4(0.85f, 0.45f, 1.00f, 0.85f), 0.85f * wind, t);
+        }
 
         // Apply HDR bright-pass + Gaussian blur + additive composite to the
         // default framebuffer. All subsequent 2D overlays (labels, UI panels)
@@ -810,6 +887,15 @@ public sealed class SolarSystemWindow : GameWindow
             "F           toggle solar flares\n" +
             "R           real / compressed scale\n" +
             "Y           toggle light-time delay\n" +
+            "B           toggle bloom (V1)\n" +
+            "H           toggle eclipses (V8)\n" +
+            "N           toggle atmosphere (V9)\n" +
+            "E           toggle auto-exposure (V10)\n" +
+            "X           toggle FXAA (V11)\n" +
+            "U           toggle sun corona (V12)\n" +
+            "K           toggle aurora (V13)\n" +
+            "I           toggle PBR shading (V14)\n" +
+            "Q           toggle ocean specular (V15)\n" +
             "Esc         quit";
         _renderer.DrawText(_font, help, 12, 78, 13, dim);
 
@@ -1198,6 +1284,23 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.StarsSaturation = MathHelper.Lerp(1.6f, 0.85f, ts);
     }
 
+    /// <summary>V8: collect every opaque body that could cast a shadow on another
+    /// body and hand it to the renderer. Capped at 16 (renderer-side limit); we
+    /// prefer the Moon and the major moons since they're responsible for the most
+    /// dramatic eclipses (lunar/solar, Galilean transits).</summary>
+    private void BuildShadowCasters(Planet[] visible)
+    {
+        var spheres = new Vector4[16];
+        int n = 0;
+        // Moons first so they aren't crowded out if the cap is reached.
+        if (n < spheres.Length) spheres[n++] = new Vector4(_moon.Position, _moon.VisualRadius);
+        foreach (var m in _moons)
+            if (n < spheres.Length) spheres[n++] = new Vector4(m.Body.Position, m.Body.VisualRadius);
+        foreach (var p in visible)
+            if (n < spheres.Length) spheres[n++] = new Vector4(p.Position, p.VisualRadius);
+        _renderer.SetShadowCasters(spheres.AsSpan(0, n));
+    }
+
     /// <summary>Build a host-orbiting moon: load its texture, set its initial spin
     /// to match the host system's tidal locking convention, and wrap the resulting
     /// <see cref="Planet"/> with the orbital parameters needed by the per-frame
@@ -1299,6 +1402,7 @@ public sealed class SolarSystemWindow : GameWindow
         _probes.Dispose();
         _lagrange.Dispose();
         _meteors.Dispose();
+        _aurora.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
@@ -1440,6 +1544,17 @@ public sealed class SolarSystemWindow : GameWindow
         public bool ShowProbes { get; set; } = true;
         public bool ShowLagrange { get; set; }
         public bool ShowMeteors { get; set; } = true;
+        // V1/V8/V9/V10/V11 post-FX toggles.
+        public bool BloomEnabled { get; set; } = true;
+        public bool EclipsesEnabled { get; set; } = true;
+        public bool AtmosphereEnabled { get; set; } = true;
+        public bool AutoExposureEnabled { get; set; } = true;
+        public bool FxaaEnabled { get; set; } = true;
+        // V12/V13/V14/V15.
+        public bool CoronaEnabled { get; set; } = true;
+        public bool ShowAurora { get; set; } = true;
+        public bool PbrEnabled { get; set; } = true;
+        public bool OceanMaskEnabled { get; set; } = true;
     }
 
     private void TryLoadPersistedState()
@@ -1480,6 +1595,17 @@ public sealed class SolarSystemWindow : GameWindow
             _showLagrange = s.ShowLagrange;
             _showMeteors = s.ShowMeteors;
 
+            _renderer.BloomEnabled = s.BloomEnabled;
+            _renderer.EclipsesEnabled = s.EclipsesEnabled;
+            _renderer.AtmosphereEnabled = s.AtmosphereEnabled;
+            _renderer.AutoExposureEnabled = s.AutoExposureEnabled;
+            _renderer.FxaaEnabled = s.FxaaEnabled;
+            _renderer.CoronaEnabled = s.CoronaEnabled;
+            _renderer.PbrEnabled = s.PbrEnabled;
+            _renderer.OceanMaskEnabled = s.OceanMaskEnabled;
+            _showAurora = s.ShowAurora;
+            _aurora.Enabled = _showAurora;
+
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
         catch (Exception ex)
@@ -1518,6 +1644,15 @@ public sealed class SolarSystemWindow : GameWindow
                 ShowProbes = _showProbes,
                 ShowLagrange = _showLagrange,
                 ShowMeteors = _showMeteors,
+                BloomEnabled = _renderer.BloomEnabled,
+                EclipsesEnabled = _renderer.EclipsesEnabled,
+                AtmosphereEnabled = _renderer.AtmosphereEnabled,
+                AutoExposureEnabled = _renderer.AutoExposureEnabled,
+                FxaaEnabled = _renderer.FxaaEnabled,
+                CoronaEnabled = _renderer.CoronaEnabled,
+                ShowAurora = _showAurora,
+                PbrEnabled = _renderer.PbrEnabled,
+                OceanMaskEnabled = _renderer.OceanMaskEnabled,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

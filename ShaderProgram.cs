@@ -55,5 +55,13 @@ public sealed class ShaderProgram : IDisposable
     public void SetFloat(string name, float f) => GL.Uniform1(Loc(name), f);
     public void SetInt(string name, int i) => GL.Uniform1(Loc(name), i);
 
+    /// <summary>Uploads <paramref name="count"/> vec4 elements (so <paramref name="data"/>
+    /// must hold at least count*4 floats) to a `uniform vec4 name[N]` array.</summary>
+    public void SetVector4Array(string name, float[] data, int count)
+    {
+        if (count <= 0) return;
+        GL.Uniform4(Loc(name), count, data);
+    }
+
     public void Dispose() => GL.DeleteProgram(Handle);
 }
