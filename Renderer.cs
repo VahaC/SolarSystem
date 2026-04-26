@@ -55,6 +55,13 @@ public sealed class Renderer : IDisposable
     /// Keeps real-scale bodies visible at any distance. Set to 0 to disable.</summary>
     public float MinPixelRadius { get; set; } = 1.0f;
 
+    /// <summary>R3: scales the Milky Way sky colour after sampling. Lowered when the
+    /// camera is in deep space so distant stars don't drown out a tiny planet.</summary>
+    public float StarsBrightness { get; set; } = 0.7f;
+    /// <summary>R3: 1.0 keeps the original star colour, &lt;1 desaturates toward grey,
+    /// &gt;1 punches up the chromatic content for a "near-planet" cinematic feel.</summary>
+    public float StarsSaturation { get; set; } = 1.0f;
+
     // Logarithmic-depth coefficient: Fcoef = 2 / log2(far + 1). Computed per draw
     // from the active camera's far plane and uploaded as `uFcoef` to every 3D shader.
     private static float Fcoef(Camera cam) => 2.0f / MathF.Log2(cam.Far + 1.0f);
@@ -559,6 +566,8 @@ public sealed class Renderer : IDisposable
         var vp = view * cam.ProjectionMatrix;
         Matrix4.Invert(vp, out var invVp);
         _starsShader.SetMatrix4("uInvViewProj", invVp);
+        _starsShader.SetFloat("uBrightness", StarsBrightness);
+        _starsShader.SetFloat("uSaturation", StarsSaturation);
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindTexture(TextureTarget.Texture2D, _starsTexture);
         _starsShader.SetInt("uTex", 0);

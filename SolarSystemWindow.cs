@@ -102,6 +102,15 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showTrails = true;
     private bool _showDwarfs = true;
     private bool _showConstellations;
+    /// <summary>R4: when true each planet's spin angle is evaluated at
+    /// <c>simDays - r/c</c> (where r is its heliocentric distance), so the day/night
+    /// terminator falls where it was when the photons currently illuminating it
+    /// left the Sun. Distant planets show the largest visible delay (Neptune
+    /// ~4 light-hours ≈ 90° of rotation).</summary>
+    private bool _lightTime;
+    /// <summary>Speed of light in AU/day = c[km/s] * 86400 / km_per_AU
+    /// = 299792.458 * 86400 / 1.495978707e8 ≈ 173.1446. Inverted so we can multiply.</summary>
+    private const double LightDaysPerAU = 1.0 / 173.1446326742403;
     private int _focusIndex = -1;     // -1 = sun, 0..7 = planet
     private int _selectedIndex = -2;  // -2 = none, -1 = sun, 0..7 = planet
 
@@ -272,9 +281,20 @@ public sealed class SolarSystemWindow : GameWindow
                 (float)(p.HelioAU.X * s),
                 (float)(p.HelioAU.Y * s),
                 (float)(p.HelioAU.Z * s));
+            // R4: rotation is evaluated at (simDays - r/c) when light-time is on,
+            // so the surface lit longitude matches when the photons currently
+            // hitting it actually left the Sun.
+            double rotDays = _simDays;
+            if (_lightTime)
+            {
+                double rAU = Math.Sqrt(p.HelioAU.X * p.HelioAU.X
+                                       + p.HelioAU.Y * p.HelioAU.Y
+                                       + p.HelioAU.Z * p.HelioAU.Z);
+                rotDays -= rAU * LightDaysPerAU;
+            }
             if (p.RotationPeriodHours != 0.0)
             {
-                double angle = (_simDays * 24.0 / p.RotationPeriodHours) * TwoPi;
+                double angle = (rotDays * 24.0 / p.RotationPeriodHours) * TwoPi;
                 angle %= TwoPi;
                 if (angle < 0) angle += TwoPi;
                 p.RotationAngleRad = (float)angle;
@@ -283,7 +303,7 @@ public sealed class SolarSystemWindow : GameWindow
             // counter-rotates relative to the ground.
             if (p.CloudTextureId != 0 && p.RotationPeriodHours != 0.0)
             {
-                double cloudAngle = (_simDays * 24.0 / p.RotationPeriodHours - _simDays * 0.08) * TwoPi;
+                double cloudAngle = (rotDays * 24.0 / p.RotationPeriodHours - rotDays * 0.08) * TwoPi;
                 cloudAngle %= TwoPi;
                 if (cloudAngle < 0) cloudAngle += TwoPi;
                 p.CloudRotationAngleRad = (float)cloudAngle;
@@ -513,6 +533,13 @@ public sealed class SolarSystemWindow : GameWindow
             case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
             case Keys.R: ToggleRealScale(); break;
             case Keys.C: _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; break;
+            case Keys.Y:
+                _lightTime = !_lightTime;
+                _seekFeedback = _lightTime
+                    ? "Light-time: ON (Sun lighting delayed by r/c)"
+                    : "Light-time: OFF";
+                _seekFeedbackUntil = GLFW.GetTime() + 2.5;
+                break;
 
             // Q7: HUD overlay (FPS + particle counts).
             case Keys.GraveAccent: _showHud = !_showHud; break;
@@ -577,6 +604,11 @@ public sealed class SolarSystemWindow : GameWindow
         // Choose between the full body list (planets + dwarfs) and the major-only
         // slice in one place so every render pass sees a consistent view.
         Planet[] visible = _showDwarfs ? _planets : _majorPlanets;
+
+        // R3: adaptive star brightness + saturation. Far from the Sun the Milky
+        // Way is dimmed so distant planets aren't drowned by the panorama; close
+        // to a planet the colour is punched up for a "near-orbit" feel.
+        UpdateAdaptiveStars(visible);
 
         _renderer.DrawStars(_camera);
         if (_showConstellations) _constellations.Draw(_camera);
@@ -690,6 +722,7 @@ public sealed class SolarSystemWindow : GameWindow
             "W           toggle solar wind\n" +
             "F           toggle solar flares\n" +
             "R           real / compressed scale\n" +
+            "Y           toggle light-time delay\n" +
             "Esc         quit";
         _renderer.DrawText(_font, help, 12, 78, 13, dim);
 
@@ -1041,6 +1074,35 @@ public sealed class SolarSystemWindow : GameWindow
         foreach (var p in _planets) p.TrailReset();
     }
 
+    /// <summary>R3: derive the sky shader's brightness/saturation from the camera's
+    /// position. Far from the Sun → dimmer (deep space); close to a body's surface
+    /// → richer colour. Thresholds adapt to the current scale mode so the same
+    /// "feel" carries over between compressed and real-scale layouts.</summary>
+    private void UpdateAdaptiveStars(Planet[] visible)
+    {
+        float distSun = _camera.Eye.Length;
+        float closestSurface = MathF.Max(0f, distSun - SunRadius);
+        foreach (var p in visible)
+            closestSurface = MathF.Min(closestSurface,
+                MathF.Max(0f, (_camera.Eye - p.Position).Length - p.VisualRadius));
+        foreach (var b in _extraBodies)
+            closestSurface = MathF.Min(closestSurface,
+                MathF.Max(0f, (_camera.Eye - b.Position).Length - b.VisualRadius));
+
+        // Dim with distance from the Sun. Reference radii scale with the current
+        // scale mode so Neptune sits near the "deep space" end in either layout.
+        float brightNear = OrbitalMechanics.RealScale ? 50f   : 30f;
+        float brightFar  = OrbitalMechanics.RealScale ? 1800f : 350f;
+        float t = MathHelper.Clamp((distSun - brightNear) / (brightFar - brightNear), 0f, 1f);
+        _renderer.StarsBrightness = MathHelper.Lerp(0.85f, 0.30f, t);
+
+        // Saturation boost when hugging a planet's surface.
+        float satNear = OrbitalMechanics.RealScale ? 0.05f : 1.5f;
+        float satFar  = OrbitalMechanics.RealScale ? 5.0f  : 30f;
+        float ts = MathHelper.Clamp((closestSurface - satNear) / (satFar - satNear), 0f, 1f);
+        _renderer.StarsSaturation = MathHelper.Lerp(1.6f, 0.85f, ts);
+    }
+
     /// <summary>Build a host-orbiting moon: load its texture, set its initial spin
     /// to match the host system's tidal locking convention, and wrap the resulting
     /// <see cref="Planet"/> with the orbital parameters needed by the per-frame
@@ -1275,6 +1337,7 @@ public sealed class SolarSystemWindow : GameWindow
         public bool SolarWindEnabled { get; set; } = true;
         public bool SolarFlaresEnabled { get; set; } = true;
         public bool RealScale { get; set; }
+        public bool LightTime { get; set; }
     }
 
     private void TryLoadPersistedState()
@@ -1309,6 +1372,7 @@ public sealed class SolarSystemWindow : GameWindow
             _showHud = s.ShowHud;
             _solarWind.Enabled = s.SolarWindEnabled;
             _solarFlares.Enabled = s.SolarFlaresEnabled;
+            _lightTime = s.LightTime;
 
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
@@ -1344,6 +1408,7 @@ public sealed class SolarSystemWindow : GameWindow
                 SolarWindEnabled = _solarWind.Enabled,
                 SolarFlaresEnabled = _solarFlares.Enabled,
                 RealScale = OrbitalMechanics.RealScale,
+                LightTime = _lightTime,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

@@ -23,24 +23,31 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **HDR + Bloom post-process** — the scene is rendered to an `RGBA16F` FBO, then bright-pass + 6-pass separable Gaussian blur + additive composite produce a glow halo on the Sun, flares and particles.
 - **Earth cloud layer** — second alpha-blended sphere at `1.012 ×` Earth radius, slowly counter-rotating (alpha derived from cloud-texture luminance, so a plain JPG works).
 - **Earth night-side city lights** — emissive nightmap added to the dark hemisphere via `1 − smoothstep(-0.05, 0.2, NdotL)`; smoothly fades across the terminator.
-- **Saturn's rings** — alpha-blended texture ring, properly tilted with the planet.
-- **Solar wind** — additive particle system streaming radially outward from the Sun, fading from yellow-young to orange-old.
-- **Solar flares** — additional GPU-driven eruption sprites that contribute to the bloom pass.
+- **Saturn's rings + mutual shadow** — alpha-blended texture ring, properly tilted with the planet. The `PlanetFS` casts a ray from each lit Saturn fragment toward the Sun and attenuates lighting by the ring's per-radius opacity; the `RingFS` does the inverse ray-vs-sphere test so Saturn's shadow falls on the rings.
+- **Lens flare** — screen-space additive ghosts along the Sun→centre axis when the Sun is roughly looked-at; fades with NDC distance and view alignment.
+- **Solar wind & flares** — instanced-quad particle systems streaming radially from the Sun (yellow→orange) and erupting sprites that feed the bloom pass.
 - **Equirectangular Milky Way sky** when `8k_stars_milky_way.jpg` is present (procedural starfield otherwise).
+- **Adaptive star brightness/saturation** — sky shader is dimmed in deep space and saturation-boosted close to a body, so the panorama doesn't drown out distant planets.
 - **Constellation overlay** — RA/Dec line endpoints from `data/constellations.json`, rendered skybox-style at infinity (Orion, Ursa Major, Cassiopeia, Cygnus, Lyra, Crux, Scorpius, Leo).
 - **Planet trails** — per-body 200-sample ring buffer rasterised as a fading line strip (alpha quadratic in age); auto-clears on direction reverse / scale toggle / date jump.
-- **Bitmap-rasterised HUD** — real Segoe UI glyphs (GDI+) packed into an RGBA atlas, used for body labels and on-screen panels.
+- **Cross-platform bitmap HUD** — SkiaSharp glyph atlas (Segoe UI → DejaVu Sans → Arial → default fallback chain) packed into an RGBA atlas, used for body labels and on-screen panels.
 
 ### Real-scale mode (`R`)
 - **Logarithmic depth** — every 3D shader writes `gl_Position.z = (log2(1 + w) · Fcoef − 1) · w` (Outerra-style), eliminating z-fighting across the ~10⁷ near/far ratio.
 - **Screen-space minimum body size** — `PlanetVS` expands sphere vertices outward from the planet centre when the projected radius drops below ~1 px, so distant bodies never collapse to nothing.
 
 ### Interaction
-- **Click-to-pick** any body for an info panel; **double-click** to focus the camera on it.
+- **Click-to-pick** any body (planet / dwarf / Moon / Galilean / Titan / comet) for an info panel; **double-click** to focus the camera on it.
 - **Smooth focus transitions** — `Camera.Target` and `Distance` lerped over ~0.5 s with a smoothstep ease, tracking the moving body en route.
-- **Focus cycling** with number keys; orbiting / panning / zoom with the mouse.
-- **Time control** — variable simulation speed, pause (`Space`), forward / backward direction (`,` / `.`).
+- **Hover tooltip** — name + heliocentric distance shown next to the cursor.
+- **Name search** — `Ctrl+F` opens a modal prompt with live prefix/substring matching across every focusable body.
 - **Date seek** — press `J` to jump to an absolute `YYYY-MM-DD` or a signed delta in days (`+30`, `-365`).
+- **Time control** — variable simulation speed, pause (`Space`), forward / backward direction (`,` / `.`).
+- **Light-time toggle** (`Y`) — delays each planet's spin angle by `r/c` so the day/night terminator falls where the photons currently illuminating it left the Sun (~2° at Earth, ~90° at Neptune).
+- **Screenshot** (`F12`, Windows) saves a PNG of the post-bloom composite to `screenshots/`.
+- **HUD overlay** (`~`) shows FPS, scale mode, and live particle / asteroid counts.
+- **Persisted UI state** — camera, sim time, every toggle and the scale mode round-trip via `%AppData%/SolarSystem/state.json`.
+- **Focus cycling** with number keys; orbiting / panning / zoom with the mouse.
 
 > 📍 Looking for what's coming next? See **[ROADMAP.md](ROADMAP.md)** for planned features and improvement ideas.
 
@@ -68,10 +75,14 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 | **L** | Toggle labels |
 | **A** | Toggle planet axis lines |
 | **W** | Toggle solar wind |
+| **F** | Toggle solar flares |
 | **C** | Toggle constellation overlay |
 | **R** | Toggle real-scale mode (km-derived radii + log depth) |
 | **D** | Toggle dwarf planets |
-| **B** | Toggle bloom post-process |
+| **Y** | Toggle light-time delay (`simDays − r/c` for spin) |
+| **Ctrl+F** | Search bodies by name |
+| **F12** | Screenshot to `screenshots/` (Windows) |
+| **~** | Toggle FPS / particle-count HUD |
 | **Esc** | Quit |
 
 ---
@@ -81,7 +92,7 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 ### Requirements
 
 - **.NET 10 SDK** (preview or later)
-- **Windows** (uses GDI+ via `System.Drawing.Common` for font rasterization)
+- **Windows / Linux / macOS** — font rasterisation runs on SkiaSharp (with `SkiaSharp.NativeAssets.Linux.NoDependencies` for Linux); only the optional `F12` screenshot key is Windows-only.
 - A GPU supporting OpenGL 4.5
 
 ### Run
@@ -128,24 +139,27 @@ Planet / dwarf-planet orbital elements live in `data/planets.json`; constellatio
 ## 🧱 Architecture
 
 ```
-Program.cs              entry point; configures NativeWindowSettings (4.5 Core)
-SolarSystemWindow.cs    GameWindow: input, update loop, render orchestration
-Renderer.cs             OpenGL resources & shader pipelines
-                        (Sun, planets, clouds, orbits, rings, trails,
-                         sky, axes, text, HDR/bloom post)
-Camera.cs               yaw/pitch/distance orbital camera, mouse handling
-Planet.cs               planet data + JSON loader + built-in fallback
-Moon.cs                 moon record (host, orbit radius, period, phase)
-OrbitalMechanics.cs     Kepler solver, heliocentric → world-space scaling
-AsteroidBelt.cs         8000-rock Kepler-solved point cloud
-Comet.cs                Halley-like ellipse + ion/dust particle tail
-Constellations.cs       skybox-anchored RA/Dec line overlay
-SolarWind.cs            CPU particle pool + GL point-sprite renderer
-SolarFlares.cs          GPU-driven eruption sprites that feed bloom
-BitmapFont.cs           GDI+ glyph atlas (Segoe UI 32px, RGBA8)
-TextureManager.cs       texture loader + procedural / ring fallbacks
-ShaderProgram.cs        thin GL shader compile/link helper
-data/planets.json       J2000 elements for planets + dwarfs
+Program.cs                entry point; configures NativeWindowSettings (4.5 Core)
+SolarSystemWindow.cs      GameWindow: input, update loop, render orchestration
+Renderer.cs               OpenGL resources & shader pipelines
+                          (Sun, planets, clouds, orbits, rings, trails,
+                           sky, axes, text, HDR/bloom post, lens flare)
+Camera.cs                 yaw/pitch/distance orbital camera, mouse handling
+Planet.cs                 planet data + JSON loader + built-in fallback
+Moon.cs                   moon record (host, orbit radius, period, phase)
+OrbitalMechanics.cs       Kepler solver, heliocentric → world-space scaling
+AsteroidBelt.cs           8000-rock Kepler-solved instanced-quad cloud
+Comet.cs                  Halley-like ellipse + ion/dust particle tail
+Constellations.cs         skybox-anchored RA/Dec line overlay
+SolarWind.cs              instanced-quad particle pool radiating from the Sun
+SolarFlares.cs            instanced-quad eruption sprites that feed bloom
+InstancedQuadParticles.cs shared instance VBO + draw helper for all particle systems
+ShaderSources.cs          loads & caches `Resources/Shaders/*.glsl` files
+BitmapFont.cs             SkiaSharp glyph atlas (Segoe UI/DejaVu/Arial fallback, RGBA8)
+TextureManager.cs         texture loader + procedural / ring fallbacks
+ShaderProgram.cs          thin GL shader compile/link helper
+Resources/Shaders/*.glsl  every vertex/fragment shader as a copy-to-output file
+data/planets.json         J2000 elements for planets + dwarfs
 data/constellations.json  RA/Dec endpoints for constellation lines
 ```
 
@@ -169,12 +183,12 @@ data/constellations.json  RA/Dec endpoints for constellation lines
 ### Solar wind details
 
 - Pool of up to 6000 particles, each `(Pos, Vel, Life, MaxLife)`.
-- Emission rate ≈ 1500 particles/s with fractional accumulator for smoothness.
+- Emission rate ≈ 1500 particles/s with fractional accumulator for smoothness, and a fixed-step (1/60 s) integrator so high `daysPerSecond` doesn't alias the motion.
 - Spawn point: Sun surface (radius × 1.05).
 - Direction: uniform on a sphere via inverse-CDF (`acos(1−2u)`).
 - Speed: 35 world-units/s ± 40 % jitter; lifetime 6 s ± 40 %.
-- GPU upload: live particles tightly packed into a single VBO via `BufferSubData`.
-- Vertex shader sets `gl_PointSize = clamp(220/dist, 1, 6) × age`, fragment shader draws a soft round point with color lerping orange-red → yellow as `Life01` rises.
+- GPU upload: live particles tightly packed into the shared `InstancedQuadParticles` instance VBO; the system draws a single 4-vertex quad via `glDrawArraysInstanced(TriangleStrip, 0, 4, count)`.
+- The shared `particle.vert` reproduces the legacy `gl_PointSize` curve in clip space (`uPxBase / uPxMin / uPxMax / uViewportSize`), so quad sizes are now driver-independent.
 
 ---
 
@@ -184,7 +198,9 @@ data/constellations.json  RA/Dec endpoints for constellation lines
 |---|---|---|
 | `OpenTK` | 4.8.2 | OpenGL bindings, windowing, input |
 | `StbImageSharp` | 2.27.13 | JPG/PNG decoding for textures |
-| `System.Drawing.Common` | 9.0.0 | GDI+ font rasterization (Windows) |
+| `SkiaSharp` | 2.88.8 | Cross-platform font rasterisation (BitmapFont atlas) |
+| `SkiaSharp.NativeAssets.Linux.NoDependencies` | 2.88.8 | Skia native blob for Linux runtimes |
+| `System.Drawing.Common` | 9.0.0 | PNG encoding for the optional Windows-only `F12` screenshot |
 
 ---
 
