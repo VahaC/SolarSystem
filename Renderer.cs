@@ -764,11 +764,13 @@ public sealed class Renderer : IDisposable
         _planetShader.SetVector2("uViewportSize", new Vector2(FramebufferSize.X, FramebufferSize.Y));
         _planetShader.SetFloat("uMinPixelRadius", MinPixelRadius);
         // Order (row-vector convention): scale -> spin around Y -> axial tilt around Z -> translate.
-        // Negate the spin so positive RotationPeriodHours (e.g. Earth/Mars/Jupiter) yields the
-        // correct counter-clockwise spin when viewed from the planet's north pole; negative
-        // periods (Venus, Uranus) automatically become retrograde.
+        // Positive RotationPeriodHours (Earth/Mars/Jupiter/...) yields the correct
+        // prograde spin (CCW viewed from the planet's north pole); negative periods
+        // (Venus, Uranus) automatically become retrograde. Earlier this term was
+        // negated to compensate for an E-W mirrored sphere texture; Phase 7a fixed
+        // that at the mesh level (1-u in BuildSphere), so the negation is gone now.
         var model = Matrix4.CreateScale(p.VisualRadius)
-                    * Matrix4.CreateRotationY(-p.RotationAngleRad)
+                    * Matrix4.CreateRotationY(p.RotationAngleRad)
                     * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(p.AxisTiltDeg))
                     * Matrix4.CreateTranslation(p.Position);
         _planetShader.SetMatrix4("uModel", model);
@@ -900,7 +902,7 @@ public sealed class Renderer : IDisposable
         // pop out beyond the planet silhouette when the body shrinks to a few pixels.
         _cloudShader.SetFloat("uMinPixelRadius", 0f);
         var model = Matrix4.CreateScale(cloudRadius)
-                    * Matrix4.CreateRotationY(-p.CloudRotationAngleRad)
+                    * Matrix4.CreateRotationY(p.CloudRotationAngleRad)
                     * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(p.AxisTiltDeg))
                     * Matrix4.CreateTranslation(p.Position);
         _cloudShader.SetMatrix4("uModel", model);

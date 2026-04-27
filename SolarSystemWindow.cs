@@ -445,8 +445,12 @@ public sealed class SolarSystemWindow : GameWindow
                     break;
             }
 
+            // Negate the Z component so the moon orbits prograde (CCW as viewed from
+            // the host's north pole, +Y), matching every real major satellite in the
+            // solar system. Without the flip the (cos, sin) parametrisation runs
+            // clockwise in our world-axis convention (X=east, -Z=north).
             float cx = (float)Math.Cos(angle) * r;
-            float cz = (float)Math.Sin(angle) * r;
+            float cz = -(float)Math.Sin(angle) * r;
             float incl = MathHelper.DegreesToRadians(m.OrbitInclinationDeg);
             float cy = cz * MathF.Sin(incl);
             cz *= MathF.Cos(incl);
