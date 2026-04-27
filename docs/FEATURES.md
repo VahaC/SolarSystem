@@ -364,8 +364,13 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
   - `OrbitWorldScale` is monotonically decreasing in compressed mode across `a ∈ {0.39, 0.72, 1.0, 1.52, 5.20, 9.54, 19.19, 30.07}`, equals `AuToWorldRealScale` everywhere in real-scale mode, and lands Neptune within ±5 units of 200 world-units (the calibration target).
 - **Run:** `dotnet test SolarSystem.Tests/SolarSystem.Tests.csproj`.
 
-### A10 — CI smoke build *(planned)*
-- GitHub Actions matrix: `windows-latest`, `ubuntu-latest`, `macos-latest` running `dotnet build -c Release`.
+### A10 — CI smoke build
+- **What:** GitHub Actions workflow at `.github/workflows/ci.yml` that builds and tests the project on every push / pull request to `main`.
+- **Matrix:** `windows-latest`, `ubuntu-latest`, `macos-latest` with `fail-fast: false` so each OS reports independently.
+- **Steps per leg:** `actions/checkout@v4` — `actions/setup-dotnet@v4` (`dotnet-version: 10.0.x`, `dotnet-quality: preview`) — `dotnet --info` — `dotnet restore` for both `SolarSystem.csproj` and `SolarSystem.Tests/SolarSystem.Tests.csproj` — `dotnet build -c Release --no-restore` for main + tests — `dotnet test -c Release --no-build` to run the xUnit suite (A9: `OrbitalMechanicsTests`, `LocalizationTests`, `SettingsPanelTests`).
+- **Triggers:** `push` and `pull_request` on `main` for normal gating; `workflow_dispatch` so a maintainer can fire the matrix manually from the **Actions** tab (the enable/disable knob for ad-hoc smoke builds); `paths-ignore` skips runs for doc-only changes (`**/*.md`, `docs/**`, `.github/copilot-instructions.md`).
+- **Permissions:** `contents: read` only — the workflow does not push artifacts or comment on PRs.
+- **Badge:** the README links `https://github.com/VahaC/SolarSystem/actions/workflows/ci.yml/badge.svg?branch=main` so the current main-branch status is visible at a glance.
 
 ### A11 — Native AOT *(planned)*
 - Trim + AOT-publish on .NET 10. Requires removing reflection-y bits and switching `System.Text.Json` to source generators.

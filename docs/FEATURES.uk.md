@@ -362,8 +362,22 @@
   - `OrbitWorldScale` монотонно спадає у стиснутому режимі для `a ∈ {0.39, 0.72, 1.0, 1.52, 5.20, 9.54, 19.19, 30.07}`, у real-scale всюди дорівнює `AuToWorldRealScale`, а Neptune приземляється у ±5 одиниць від цільових 200 world-units.
 - **Запуск:** `dotnet test SolarSystem.Tests/SolarSystem.Tests.csproj`.
 
-### A10 — CI smoke-build *(заплановано)*
-- Матриця GitHub Actions `windows-latest` / `ubuntu-latest` / `macos-latest` із `dotnet build -c Release`.
+### A10 — CI smoke-build
+- **Що:** GitHub Actions workflow `.github/workflows/ci.yml`, що збирає та тестує проєкт на кожному push / pull request до `main`.
+- **Матриця:** `windows-latest`, `ubuntu-latest`, `macos-latest` із `fail-fast: false`, щоб кожна ОС звітувала незалежно.
+- **Кроки кожного запуску:**
+  1. `actions/checkout@v4`.
+  2. `actions/setup-dotnet@v4` із `dotnet-version: 10.0.x` (`dotnet-quality: preview`).
+  3. `dotnet --info` — діагностика середовища.
+  4. `dotnet restore` для `SolarSystem.csproj` і `SolarSystem.Tests/SolarSystem.Tests.csproj`.
+  5. `dotnet build -c Release --no-restore` основного та тестового проєкту.
+  6. `dotnet test -c Release --no-build` — xUnit-сьют (A9: `OrbitalMechanicsTests`, `LocalizationTests`, `SettingsPanelTests`).
+- **Тригери:**
+  - `push` та `pull_request` на `main` — звичайне гейтування.
+  - `workflow_dispatch` — мейнтейнер може запустити матрицю вручну з вкладки **Actions** (це і є «увімкнути/вимкнути» — для разових smoke-зборок без коміту).
+  - `paths-ignore` пропускає запуски для змін лише в документації (`**/*.md`, `docs/**`, `.github/copilot-instructions.md`), щоб правки README / ROADMAP / FEATURES не з’їдали матричні хвилини.
+- **Permissions:** лише `contents: read` — workflow не публікує артефакти й не коментує PR.
+- **Бейдж:** у README додано бейдж `https://github.com/VahaC/SolarSystem/actions/workflows/ci.yml/badge.svg?branch=main`, щоб поточний статус `main` було видно одразу.
 
 ### A11 — Native AOT *(заплановано)*
 - Trim + AOT-publish на .NET 10. Прибрати reflection-залежні шматки, перевести `System.Text.Json` на source generators.

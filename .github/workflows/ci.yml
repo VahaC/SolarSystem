@@ -1,0 +1,63 @@
+name: CI
+
+# Triggers:
+#  - push / pull_request on `main` for the regular gating runs.
+#  - workflow_dispatch lets a maintainer kick off the matrix manually
+#    from the Actions tab (the "enable/disable" knob — re-runs and ad-hoc
+#    smoke builds without needing a commit).
+#  - paths-ignore skips runs for documentation-only changes so README /
+#    ROADMAP / docs edits don't burn matrix minutes.
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/copilot-instructions.md'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/copilot-instructions.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, ubuntu-latest, macos-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Show .NET info
+        run: dotnet --info
+
+      - name: Restore (main)
+        run: dotnet restore SolarSystem.csproj
+
+      - name: Restore (tests)
+        run: dotnet restore SolarSystem.Tests/SolarSystem.Tests.csproj
+
+      - name: Build (Release)
+        run: dotnet build SolarSystem.csproj -c Release --no-restore
+
+      - name: Build tests (Release)
+        run: dotnet build SolarSystem.Tests/SolarSystem.Tests.csproj -c Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test SolarSystem.Tests/SolarSystem.Tests.csproj -c Release --no-build --verbosity normal

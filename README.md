@@ -128,6 +128,15 @@ cd SolarSystem
 dotnet run -c Release
 ```
 
+### Continuous integration (A10)
+
+Every push and PR to `main` runs `.github/workflows/ci.yml` — a matrix of
+`windows-latest`, `ubuntu-latest` and `macos-latest` that restores, builds
+(`-c Release`) and `dotnet test`s the xUnit suite. The workflow can also be
+triggered manually from the **Actions** tab (`workflow_dispatch`), and
+documentation-only changes (`**/*.md`, `docs/**`) are excluded via
+`paths-ignore` so README / roadmap edits don't burn matrix minutes.
+
 ### Headless render / video export (A7)
 
 The same binary can render a deterministic PNG sequence (and optionally encode
