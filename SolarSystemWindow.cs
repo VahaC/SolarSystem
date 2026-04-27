@@ -85,6 +85,17 @@ public sealed class SolarSystemWindow : GameWindow
     // refer into this array, offset by _planets.Length.
     private Planet[] _extraBodies = [];
 
+    /// <summary>Eclipse-bookmark demo override: the simplified circular Moon model
+    /// (sidereal period only, fixed inclination, no nodal regression) does NOT
+    /// reproduce real Sun-Earth-Moon alignments on the historical dates listed in
+    /// the Eclipse bookmarks. To make those bookmarks actually demonstrate the
+    /// eclipse they advertise, jumping to an Eclipse entry arms this trigger; for
+    /// a ±1-day window around it the Moon's position is forced onto the Sun-Earth
+    /// line (between Sun and Earth for a solar eclipse, or on the anti-Sun side
+    /// for a lunar eclipse). Outside the window the regular orbital model runs.</summary>
+    private double _eclipseDemoSimDays = double.NaN;
+    private bool _eclipseDemoIsLunar;
+
     // Q3: name search prompt state. Mirrors the date-seek prompt's lifecycle.
     private bool _searchActive;
     private string _searchBuffer = "";
@@ -386,13 +397,36 @@ public sealed class SolarSystemWindow : GameWindow
             float moonRadius = OrbitalMechanics.RealScale
                 ? (float)(384400.0 * OrbitalMechanics.KmToWorldRealScale)
                 : MoonOrbitRadius;
-            double moonAngle = (_simDays / MoonOrbitalPeriodDays) * TwoPi;
-            float cx = (float)Math.Cos(moonAngle) * moonRadius;
-            float cz = (float)Math.Sin(moonAngle) * moonRadius;
-            float incl = MathHelper.DegreesToRadians(MoonOrbitInclinationDeg);
-            float cy = cz * MathF.Sin(incl);
-            cz *= MathF.Cos(incl);
-            _moon.Position = earth.Position + new Vector3(cx, cy, cz);
+
+            // Eclipse-bookmark demo: while the user is within ±1 day of an armed
+            // Eclipse trigger, snap the Moon onto the Sun-Earth line so that the
+            // bookmark actually reproduces the eclipse it advertises (see
+            // _eclipseDemoSimDays). Outside the window the regular orbital model
+            // takes over again.
+            bool eclipseDemo = !double.IsNaN(_eclipseDemoSimDays)
+                               && Math.Abs(_simDays - _eclipseDemoSimDays) < 1.0;
+            if (eclipseDemo)
+            {
+                Vector3 sunToEarth = earth.Position;
+                Vector3 dir = sunToEarth.LengthSquared > 1e-12f
+                    ? Vector3.Normalize(sunToEarth)
+                    : Vector3.UnitX;
+                // Solar eclipse: Moon between Sun (origin) and Earth → toward the Sun
+                // from Earth's centre, i.e. -dir. Lunar eclipse: Moon in Earth's
+                // shadow → away from the Sun, i.e. +dir.
+                Vector3 offset = (_eclipseDemoIsLunar ? dir : -dir) * moonRadius;
+                _moon.Position = earth.Position + offset;
+            }
+            else
+            {
+                double moonAngle = (_simDays / MoonOrbitalPeriodDays) * TwoPi;
+                float cx = (float)Math.Cos(moonAngle) * moonRadius;
+                float cz = (float)Math.Sin(moonAngle) * moonRadius;
+                float incl = MathHelper.DegreesToRadians(MoonOrbitInclinationDeg);
+                float cy = cz * MathF.Sin(incl);
+                cz *= MathF.Cos(incl);
+                _moon.Position = earth.Position + new Vector3(cx, cy, cz);
+            }
             _moon.HelioAU = earth.HelioAU; // for info panel "distance from Sun" approximation
             double mAngle = (_simDays * 24.0 / _moon.RotationPeriodHours) * TwoPi;
             mAngle %= TwoPi;
@@ -594,6 +628,7 @@ public sealed class SolarSystemWindow : GameWindow
             if (entry is { } ev)
             {
                 _simDays = Bookmarks.ToSimDays(ev);
+                ArmEclipseDemo(ev);
                 ClearAllTrails();
                 _audio.PlayTick();
                 _seekFeedback = $"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}";
@@ -1149,6 +1184,7 @@ public sealed class SolarSystemWindow : GameWindow
             if (jumpTo is { } ev)
             {
                 _simDays = Bookmarks.ToSimDays(ev);
+                ArmEclipseDemo(ev);
                 ClearAllTrails();
                 _audio.PlayTick();
                 _seekFeedback = $"{ev.Kind}: {ev.Title} \u2014 {ev.Date:yyyy-MM-dd}";
@@ -1438,6 +1474,23 @@ public sealed class SolarSystemWindow : GameWindow
         foreach (var p in visible)
             if (n < spheres.Length) spheres[n++] = new Vector4(p.Position, p.VisualRadius);
         _renderer.SetShadowCasters(spheres.AsSpan(0, n));
+    }
+
+    /// <summary>Arm the Moon-position override around an Eclipse bookmark so that
+    /// jumping to it actually demonstrates the alignment. See <see cref="_eclipseDemoSimDays"/>
+    /// for rationale; non-Eclipse bookmarks clear the trigger.</summary>
+    private void ArmEclipseDemo(in Bookmarks.Entry ev)
+    {
+        if (ev.Kind == BookmarkKind.Eclipse)
+        {
+            _eclipseDemoSimDays = ev.SimDays;
+            _eclipseDemoIsLunar = !string.IsNullOrEmpty(ev.Tags)
+                && ev.Tags.Contains("lunar", StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            _eclipseDemoSimDays = double.NaN;
+        }
     }
 
     /// <summary>Build a host-orbiting moon: load its texture, set its initial spin

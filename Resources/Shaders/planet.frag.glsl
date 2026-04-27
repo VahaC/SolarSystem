@@ -34,7 +34,11 @@ uniform float uAtmosphereStrength;
 // Returns the maximum occlusion fraction (0=lit, 1=fully shadowed) caused by any
 // other body intersecting the segment from `origin` to `lightPos`. Soft penumbra
 // from a smoothstep around the silhouette; the shaded body itself is skipped.
-float bodyShadow(vec3 origin, vec3 lightPos) {
+// `radiusScale` inflates the caster radius to compensate for the vertex-stage
+// silhouette expansion used in real-scale mode (planet.vert.glsl) — without it
+// the umbra would be sub-pixel on the artificially enlarged receiver disc, so
+// solar/lunar eclipses and Galilean transits would never become visible.
+float bodyShadow(vec3 origin, vec3 lightPos, float radiusScale) {
     vec3 toLight = lightPos - origin;
     float dToLight = length(toLight);
     if (dToLight < 1e-4) return 0.0;
@@ -48,7 +52,7 @@ float bodyShadow(vec3 origin, vec3 lightPos) {
         float tca = dot(oc, ldir);
         if (tca <= 0.0 || tca >= dToLight) continue;
         float d2 = max(dot(oc, oc) - tca * tca, 0.0);
-        float r = sph.w;
+        float r = sph.w * radiusScale;
         if (d2 >= r * r) continue;
         float d = sqrt(d2);
         float soft = 1.0 - smoothstep(r * 0.85, r, d);
@@ -126,7 +130,14 @@ void main(){
 
     // V8: attenuate direct sunlight by any other body intersecting the segment
     // toward the Sun (lunar/solar eclipses, Galilean transit shadows, etc.).
-    float eclipse = 1.0 - bodyShadow(vWorldPos, uLightPos);
+    // In real-scale mode the vertex stage inflates the receiver's silhouette
+    // outward from uPlanetCenter by k = |vWorldPos - center| / uPlanetRadius
+    // (it equals 1 in compressed mode). Reconstruct the true surface point as
+    // the shadow ray origin and scale caster radii by the same factor so the
+    // umbra stays visually proportional to the rendered (enlarged) disc.
+    float inflation = length(vWorldPos - uPlanetCenter) / max(uPlanetRadius, 1e-8);
+    vec3 shadowOrigin = uPlanetCenter + N * uPlanetRadius;
+    float eclipse = 1.0 - bodyShadow(shadowOrigin, uLightPos, inflation);
     vec3 color = ambient + (lit + specTerm) * eclipse;
     // V4: night-side emissive map (city lights). Only contributes on the dark
     // side of the terminator and fades smoothly across it.
