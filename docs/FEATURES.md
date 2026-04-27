@@ -373,6 +373,10 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 ### A12 — Per-frame profiler overlay *(planned)*
 - Extend the `~` HUD with cumulative GPU + CPU timing per pass (sky, planets, particles, bloom) using `GL_TIMESTAMP` queries.
 
+### Borderless fullscreen toggle (Alt+Enter)
+- **Key:** `Alt + Enter` flips between the normal window and `WindowState.Fullscreen` on the current monitor. Also exposed as a row in the F1 settings panel (`ui.settings.fullscreen`) so it can be enabled / disabled by mouse without the keyboard shortcut. The choice is persisted in `state.json` (`PersistedState.Fullscreen`) and re-applied on startup, so the window comes up in the same mode it was closed in.
+- **Localised banners:** `ui.fullscreen.on` / `ui.fullscreen.off` are surfaced as the standard transient feedback line whenever the state flips.
+
 ---
 
 ## Global keyboard cheat sheet
@@ -397,6 +401,7 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 | `F6` | N-body mode |
 | `F7` | GLSL hot-reload |
 | `F8` | GPU asteroid belt (compute shader) |
+| `Alt+Enter` | Toggle borderless fullscreen |
 | `F1` | Settings panel |
 | `F2` | Cycle language |
 | `F12` | Screenshot |

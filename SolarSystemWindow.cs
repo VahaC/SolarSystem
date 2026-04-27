@@ -165,6 +165,11 @@ public sealed class SolarSystemWindow : GameWindow
     /// left the Sun. Distant planets show the largest visible delay (Neptune
     /// ~4 light-hours ≈ 90° of rotation).</summary>
     private bool _lightTime;
+    /// <summary>Borderless fullscreen toggle (Alt+Enter). Persisted in
+    /// <see cref="PersistedState.Fullscreen"/> and surfaced as a row in the F1
+    /// settings panel so it can be enabled/disabled without the keyboard
+    /// shortcut.</summary>
+    private bool _fullscreen;
     /// <summary>Speed of light in AU/day = c[km/s] * 86400 / km_per_AU
     /// = 299792.458 * 86400 / 1.495978707e8 ≈ 173.1446. Inverted so we can multiply.</summary>
     private const double LightDaysPerAU = 1.0 / 173.1446326742403;
@@ -656,6 +661,16 @@ public sealed class SolarSystemWindow : GameWindow
     {
         base.OnKeyDown(e);
         if (e.IsRepeat && !_seekActive) return;
+
+        // Alt+Enter toggles borderless fullscreen. Handled before the modal
+        // prompts so it works even while the date-seek / search prompt is open
+        // (the prompts themselves use plain Enter to commit, never Alt+Enter).
+        if ((e.Key == Keys.Enter || e.Key == Keys.KeyPadEnter)
+            && (e.Modifiers & KeyModifiers.Alt) != 0)
+        {
+            ToggleFullscreen();
+            return;
+        }
 
         // Date-seek prompt swallows all keys except its own control set so the user
         // can type a date without triggering pause / focus / scale toggles.
@@ -1923,6 +1938,7 @@ public sealed class SolarSystemWindow : GameWindow
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.nbody",         Get = () => _nbodyEnabled,     Toggle = () => { _nbodyEnabled = !_nbodyEnabled; if (_nbodyEnabled) _nbodyDirty = true; } });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lensflare",     Get = () => _renderer.LensFlareEnabled, Toggle = () => _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.gpubelt",       Get = () => _belt.UseGpuCompute,        Toggle = () => { if (_belt.GpuComputeAvailable) _belt.UseGpuCompute = !_belt.UseGpuCompute; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.fullscreen",    Get = () => _fullscreen,                Toggle = ToggleFullscreen });
         _settings.Add(new SettingsPanel.SliderRow {
             Label  = "ui.settings.speed",
             Get    = () => (float)_daysPerSecond,
@@ -2113,6 +2129,31 @@ public sealed class SolarSystemWindow : GameWindow
         data.SaveTo(fs);
     }
 
+    // -------- Alt+Enter: borderless fullscreen toggle --------------------------
+
+    /// <summary>Flip between borderless fullscreen and a normal window. Mirrors
+    /// the keyboard binding (Alt+Enter) and the F1 settings-panel row so the
+    /// two stay in sync. Idempotent: re-applying the same state is a no-op so
+    /// the persisted-state restore on startup doesn't briefly flash a window
+    /// resize.</summary>
+    private void ToggleFullscreen() => SetFullscreen(!_fullscreen);
+
+    private void SetFullscreen(bool fullscreen)
+    {
+        if (_fullscreen == fullscreen) return;
+        _fullscreen = fullscreen;
+        try
+        {
+            WindowState = fullscreen ? WindowState.Fullscreen : WindowState.Normal;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[fullscreen] toggle failed: {ex.Message}");
+        }
+        _seekFeedback = Localization.T(fullscreen ? "ui.fullscreen.on" : "ui.fullscreen.off");
+        _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+    }
+
     // -------- A7 (interactive): F9 toggles in-app frame recording --------------
 
     /// <summary>Resolve an ffmpeg executable: explicit env-var override
@@ -2259,6 +2300,8 @@ public sealed class SolarSystemWindow : GameWindow
         public bool LensFlareEnabled { get; set; } = true;
         // A8: GPU compute path for the asteroid belt's Kepler solve.
         public bool GpuAsteroidsEnabled { get; set; } = true;
+        // Alt+Enter borderless fullscreen toggle.
+        public bool Fullscreen { get; set; }
     }
 
     private void TryLoadPersistedState()
@@ -2323,6 +2366,7 @@ public sealed class SolarSystemWindow : GameWindow
             if (_nbodyEnabled) _nbodyDirty = true;
             _renderer.LensFlareEnabled = s.LensFlareEnabled;
             _belt.UseGpuCompute = s.GpuAsteroidsEnabled;
+            SetFullscreen(s.Fullscreen);
 
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
@@ -2382,6 +2426,7 @@ public sealed class SolarSystemWindow : GameWindow
                 NBodyEnabled = _nbodyEnabled,
                 LensFlareEnabled = _renderer.LensFlareEnabled,
                 GpuAsteroidsEnabled = _belt.UseGpuCompute,
+                Fullscreen = _fullscreen,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

@@ -103,6 +103,7 @@ Priorities are subjective — anything here is fair game, in any order.
 | A10 | CI / Linux + macOS smoke build | GitHub Actions matrix (`windows-latest`, `ubuntu-latest`, `macos-latest`) running `dotnet build -c Release`; gate PRs on it. |
 | A11 | Native AOT | Trim + AOT-publish the project (.NET 10 finally makes this realistic with OpenTK). Requires removing every `inverse(...)` reflection-y bit and switching `System.Text.Json` to source generators. |
 | A12 | Per-frame profiler overlay | Extend the `~` HUD with cumulative GPU + CPU timing per pass (sky, planets, particles, bloom) using `GL_TIMESTAMP` queries. |
+| UX | Borderless fullscreen toggle | ✅ Done. `Alt + Enter` flips `WindowState` between `Normal` and `Fullscreen` on the current monitor; the new `_fullscreen` flag is mirrored by an F1 settings-panel row (`ui.settings.fullscreen`) so the feature can also be enabled/disabled by mouse. State is persisted via `PersistedState.Fullscreen` and re-applied on startup, with localised `ui.fullscreen.on` / `ui.fullscreen.off` banners surfacing each toggle. |
 
 ---
 

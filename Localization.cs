@@ -115,6 +115,7 @@ public static class Localization
             "F8          GPU asteroid belt (A8)\n" +
             "F9          start / stop video recording (A7)\n" +
             "Z           toggle lens flare (V6)\n" +
+            "Alt+Enter   toggle fullscreen\n" +
             "Tab         help full / mini / off (Q14)\n" +
             "S           toggle audio cues (Q15)\n" +
             "Esc         quit",
@@ -172,6 +173,10 @@ public static class Localization
         ["ui.gpubelt.on"]             = "GPU asteroid belt: ON (compute shader)",
         ["ui.gpubelt.off"]            = "GPU asteroid belt: OFF (CPU Kepler solve)",
         ["ui.gpubelt.unavailable"]    = "GPU asteroid belt unavailable on this driver",
+        // Alt+Enter borderless fullscreen toggle.
+        ["ui.settings.fullscreen"]    = "Fullscreen (Alt+Enter)",
+        ["ui.fullscreen.on"]          = "Fullscreen: ON",
+        ["ui.fullscreen.off"]         = "Fullscreen: OFF",
     };
 
     private static Dictionary<string, string> _active = _en;
