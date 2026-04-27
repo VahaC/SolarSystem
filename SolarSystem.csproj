@@ -9,6 +9,23 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>SolarSystem</RootNamespace>
     <AssemblyName>SolarSystem</AssemblyName>
+
+    <!-- A11: Native AOT readiness. The flags below stay on for normal builds
+         (so trim/AOT analyzers shout early about reflection-y additions); the
+         actual native binary is produced with
+         `dotnet publish -c Release -p:PublishAot=true -r <rid>`.
+         All `System.Text.Json` calls go through the source-generated
+         `SolarSystemJsonContext` so the trimmer doesn't need reflection
+         metadata at runtime. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- The xUnit suite uses the default reflection serializer, which trips
+         IL2026 / IL3050 inside Microsoft.NET.Test.Sdk. Keep those warnings
+         from breaking the test build only - production code stays warned. -->
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
   </PropertyGroup>
 
   <!-- The test project lives in a sibling folder under the same root, so the
@@ -29,7 +46,8 @@
     <PackageReference Include="SkiaSharp" Version="2.88.8" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.8" />
     <PackageReference Include="StbImageSharp" Version="2.27.13" />
-    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+    <!-- A11: System.Drawing.Common was retired with Q11's SkiaSharp screenshot
+         path and is not Native-AOT-friendly anyway; intentionally omitted. -->
   </ItemGroup>
 
   <ItemGroup>

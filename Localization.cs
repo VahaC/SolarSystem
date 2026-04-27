@@ -209,7 +209,8 @@ public static class Localization
             string? path = Resolve($"lang.{code}.json");
             if (path == null || !File.Exists(path)) { _active = _en; CurrentLanguage = "en"; return; }
             var json = File.ReadAllText(path);
-            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            // A11: AOT-friendly source-generated typeinfo.
+            var dict = JsonSerializer.Deserialize(json, SolarSystemJsonContext.Default.DictionaryStringString);
             _active = dict ?? _en;
             CurrentLanguage = code.ToLowerInvariant();
         }

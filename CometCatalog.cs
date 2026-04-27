@@ -40,7 +40,9 @@ public static class CometCatalog
             try
             {
                 using var fs = File.OpenRead(path);
-                var doc = JsonSerializer.Deserialize<CometsFile>(fs, _options);
+                // A11: source-gen typeinfo with the same lenient runtime options.
+                var ctx = new SolarSystemJsonContext(_options);
+                var doc = JsonSerializer.Deserialize(fs, ctx.CometsFile);
                 if (doc?.Comets is { Length: > 0 } list)
                 {
                     var arr = new Entry[list.Length];
@@ -127,12 +129,14 @@ public static class CometCatalog
         AllowTrailingCommas = true,
     };
 
-    private sealed class CometsFile
+    // A11: was private; promoted to internal so SolarSystemJsonContext (the
+    // System.Text.Json source-generated context) can reference the type.
+    internal sealed class CometsFile
     {
         [JsonPropertyName("comets")] public CometDto[]? Comets { get; set; }
     }
 
-    private sealed class CometDto
+    internal sealed class CometDto
     {
         public string? Name { get; set; }
         public double SemiMajorAxisAU { get; set; }

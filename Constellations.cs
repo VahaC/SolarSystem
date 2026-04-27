@@ -124,7 +124,9 @@ public sealed class Constellations : IDisposable
                 ReadCommentHandling = JsonCommentHandling.Skip,
                 AllowTrailingCommas = true,
             };
-            var doc = JsonSerializer.Deserialize<ConstellationsFile>(fs, opts);
+            // A11: AOT-friendly source-generated typeinfo.
+            var ctx = new SolarSystemJsonContext(opts);
+            var doc = JsonSerializer.Deserialize(fs, ctx.ConstellationsFile);
             var list = doc?.Constellations ?? new List<ConstellationDto>();
             Debug.WriteLine($"[constellations.json] loaded {list.Count} constellations");
             return list;
@@ -144,12 +146,14 @@ public sealed class Constellations : IDisposable
         _vao = _vbo = 0;
     }
 
-    private sealed class ConstellationsFile
+    // A11: was private; promoted to internal so SolarSystemJsonContext (the
+    // System.Text.Json source-generated context) can reference the type.
+    internal sealed class ConstellationsFile
     {
         [JsonPropertyName("constellations")] public List<ConstellationDto>? Constellations { get; set; }
     }
 
-    private sealed class ConstellationDto
+    internal sealed class ConstellationDto
     {
         public string? Name { get; set; }
         public double LabelRaHours { get; set; }

@@ -229,7 +229,10 @@ public sealed class Bookmarks
                 ReadCommentHandling = JsonCommentHandling.Skip,
                 AllowTrailingCommas = true,
             };
-            var raw = JsonSerializer.Deserialize<JsonEntry[]>(s, opts);
+            // A11: route through the source-generated context so JSON metadata
+            // is resolved at compile time (AOT-friendly, no reflection).
+            var ctx = new SolarSystemJsonContext(opts);
+            var raw = JsonSerializer.Deserialize(s, ctx.JsonEntryArray);
             if (raw == null || raw.Length == 0) return null;
             var list = new List<Entry>(raw.Length);
             foreach (var r in raw)
@@ -283,7 +286,9 @@ public sealed class Bookmarks
         };
     }
 
-    private sealed class JsonEntry
+    // A11: was private; promoted to internal so SolarSystemJsonContext (the
+    // System.Text.Json source-generated context) can reference the type.
+    internal sealed class JsonEntry
     {
         public string? Title { get; set; }
         public string? Date { get; set; }

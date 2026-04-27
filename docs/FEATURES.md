@@ -372,8 +372,13 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 - **Permissions:** `contents: read` only — the workflow does not push artifacts or comment on PRs.
 - **Badge:** the README links `https://github.com/VahaC/SolarSystem/actions/workflows/ci.yml/badge.svg?branch=main` so the current main-branch status is visible at a glance.
 
-### A11 — Native AOT *(planned)*
-- Trim + AOT-publish on .NET 10. Requires removing reflection-y bits and switching `System.Text.Json` to source generators.
+### A11 — Native AOT
+- **What:** the project compiles cleanly under the .NET 10 trim / AOT analyzers and can be published as a single self-contained native binary with `dotnet publish -c Release -p:PublishAot=true -r <rid>`.
+- **CSProj flags:** `IsAotCompatible`, `IsTrimmable`, `EnableTrimAnalyzer` and `EnableSingleFileAnalyzer` are on for every build (Debug + Release) so any new reflection-y addition lights up the warning list before it ever reaches a publish step. Native AOT itself is opt-in via the publish flag — interactive `dotnet run` keeps the JIT for fast iteration.
+- **System.Text.Json source generators:** every (de)serialisation path in the project — `Bookmarks` (`bookmarks.json`), `CameraPath` (`%AppData%/SolarSystem/campath.json`), `CometCatalog` (`comets.json`), `Constellations` (`constellations.json`), `Localization` (`lang.<code>.json`), `Planet` (`planets.json`) and `SolarSystemWindow.PersistedState` (`state.json`) — now routes through a shared `[JsonSerializable]`-decorated `SolarSystemJsonContext : JsonSerializerContext` (see `JsonContext.cs`). Per-call-site `JsonSerializerOptions` (case-insensitive matching, comment / trailing-comma tolerance, `WriteIndented`) are wrapped with `new SolarSystemJsonContext(opts)` so the source-generated `JsonTypeInfo<T>` is still used and no reflection-based metadata resolver is pulled in.
+- **DTOs:** `Bookmarks.JsonEntry`, `CometCatalog.CometsFile/CometDto`, `Constellations.ConstellationsFile/ConstellationDto`, `Planet.PlanetsFile/PlanetDto` and `SolarSystemWindow.PersistedState` were promoted from `private sealed class` to `internal sealed class` so the context can name them.
+- **Dropped reference:** `System.Drawing.Common` (unused since Q11's SkiaSharp screenshot path) was removed from the csproj — it isn't AOT-friendly and pulled in a needless P/Invoke surface.
+- **No runtime toggle:** AOT is purely build-time, so there is nothing to flip from the F1 settings panel; the regular `dotnet run` developer loop continues to use the JIT.
 
 ### A12 — Per-frame profiler overlay *(planned)*
 - Extend the `~` HUD with cumulative GPU + CPU timing per pass (sky, planets, particles, bloom) using `GL_TIMESTAMP` queries.

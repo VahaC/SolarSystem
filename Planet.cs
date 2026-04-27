@@ -331,7 +331,9 @@ public sealed class Planet
         try
         {
             using var fs = File.OpenRead(path);
-            var doc = JsonSerializer.Deserialize<PlanetsFile>(fs, _jsonOptions)
+            // A11: AOT-friendly source-generated typeinfo.
+            var ctx = new JsonSerializerOptions(_jsonOptions);
+            var doc = JsonSerializer.Deserialize(fs, new SolarSystemJsonContext(ctx).PlanetsFile)
                       ?? throw new InvalidDataException("planets.json deserialised as null");
             var ms = (doc.Majors ?? Array.Empty<PlanetDto>()).Select(FromDto).ToArray();
             var ds = (doc.Dwarfs ?? Array.Empty<PlanetDto>()).Select(FromDto).ToArray();
@@ -386,13 +388,15 @@ public sealed class Planet
         };
     }
 
-    private sealed class PlanetsFile
+    // A11: was private; promoted to internal so SolarSystemJsonContext (the
+    // System.Text.Json source-generated context) can reference the type.
+    internal sealed class PlanetsFile
     {
         [JsonPropertyName("majors")] public PlanetDto[]? Majors { get; set; }
         [JsonPropertyName("dwarfs")] public PlanetDto[]? Dwarfs { get; set; }
     }
 
-    private sealed class PlanetDto
+    internal sealed class PlanetDto
     {
         public string? Name { get; set; }
         public double SemiMajorAxisAU { get; set; }

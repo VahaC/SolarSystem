@@ -4,6 +4,10 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 
 ![Solar System](docs/screenshot.jpg)
 
+> 📖 Full feature reference (English / Ukrainian):
+> **[docs/FEATURES.md](docs/FEATURES.md)** · **[docs/FEATURES.uk.md](docs/FEATURES.uk.md)**.
+> Roadmap and planned items: **[ROADMAP.md](ROADMAP.md)**.
+
 ---
 
 ## ✨ Features
@@ -153,6 +157,27 @@ Flags: `--from / --to <YYYY-MM-DD>`, `--dt <days/frame>`, `--frames N`
 `--video-out <file.mp4>`, `--real-scale`. Sim time is pinned per frame so the
 output is identical regardless of how fast the offscreen loop runs; persisted
 UI state is loaded for camera / toggles but not overwritten.
+
+### Native AOT publish (A11)
+
+The project is trim- / AOT-clean: `IsAotCompatible`, `IsTrimmable`,
+`EnableTrimAnalyzer` and `EnableSingleFileAnalyzer` are on for every build, and
+every `System.Text.Json` call goes through a source-generated
+`SolarSystemJsonContext` (see `JsonContext.cs`) so no reflection-based metadata
+resolver is pulled in at runtime. To produce a single self-contained native
+binary:
+
+```powershell
+dotnet publish SolarSystem.csproj -c Release -r win-x64   -p:PublishAot=true
+# Linux / macOS:
+dotnet publish SolarSystem.csproj -c Release -r linux-x64 -p:PublishAot=true
+dotnet publish SolarSystem.csproj -c Release -r osx-arm64 -p:PublishAot=true
+```
+
+AOT is purely build-time — there is no F1 / keyboard toggle. The standard
+`dotnet run` developer loop continues to use the JIT for fast iteration.
+Full reference in [docs/FEATURES.md#a11--native-aot](docs/FEATURES.md#a11--native-aot)
+([UA](docs/FEATURES.uk.md#a11--native-aot)).
 
 ### Textures
 

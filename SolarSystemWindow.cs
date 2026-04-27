@@ -2247,7 +2247,9 @@ public sealed class SolarSystemWindow : GameWindow
 
     // -------- Q5: persisted settings --------------------------------------------
 
-    private sealed class PersistedState
+    // A11: was private; promoted to internal so SolarSystemJsonContext (the
+    // System.Text.Json source-generated context) can reference the type.
+    internal sealed class PersistedState
     {
         public float Yaw { get; set; }
         public float Pitch { get; set; }
@@ -2310,7 +2312,8 @@ public sealed class SolarSystemWindow : GameWindow
         {
             if (!File.Exists(StateFilePath)) return;
             var json = File.ReadAllText(StateFilePath);
-            var s = JsonSerializer.Deserialize<PersistedState>(json);
+            // A11: AOT-friendly source-generated typeinfo.
+            var s = JsonSerializer.Deserialize(json, SolarSystemJsonContext.Default.PersistedState);
             if (s == null) return;
 
             // RealScale must be applied first so VisualRadii and camera limits are
@@ -2430,7 +2433,10 @@ public sealed class SolarSystemWindow : GameWindow
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(StateFilePath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));
+            // A11: AOT-friendly source-generated typeinfo, options bound at
+            // context construction so WriteIndented still applies.
+            var ctx = new SolarSystemJsonContext(new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(StateFilePath, JsonSerializer.Serialize(s, ctx.PersistedState));
             Debug.WriteLine($"[state] saved to {StateFilePath}");
         }
         catch (Exception ex)

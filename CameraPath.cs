@@ -125,7 +125,10 @@ public sealed class CameraPath
         try
         {
             if (!File.Exists(PathOnDisk)) return;
-            var data = JsonSerializer.Deserialize<Waypoint?[]>(File.ReadAllText(PathOnDisk));
+            // A11: source-gen typeinfo (AOT-friendly).
+            var data = JsonSerializer.Deserialize(
+                File.ReadAllText(PathOnDisk),
+                SolarSystemJsonContext.Default.WaypointArray);
             if (data == null) return;
             for (int i = 0; i < Math.Min(_slots.Length, data.Length); i++) _slots[i] = data[i];
         }
@@ -138,8 +141,11 @@ public sealed class CameraPath
         {
             string? dir = Path.GetDirectoryName(PathOnDisk);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            // A11: build a context bound to WriteIndented so the source-gen
+            // resolver still produces pretty-printed JSON.
+            var ctx = new SolarSystemJsonContext(new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(PathOnDisk,
-                JsonSerializer.Serialize(_slots, new JsonSerializerOptions { WriteIndented = true }));
+                JsonSerializer.Serialize(_slots, ctx.WaypointArray));
         }
         catch { /* ignore */ }
     }
