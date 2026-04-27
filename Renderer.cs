@@ -183,7 +183,17 @@ public sealed class Renderer : IDisposable
                 float z = MathF.Sin(phi) * MathF.Sin(theta);
                 verts.Add(x); verts.Add(y); verts.Add(z); // pos
                 verts.Add(x); verts.Add(y); verts.Add(z); // normal
-                verts.Add(u); verts.Add(1f - v);          // uv
+                // U is mirrored (1-u) because our θ parameterisation walks the
+                // equator clockwise as seen from +Y (the planet's north pole),
+                // while equirectangular Earth textures store longitude growing
+                // eastward (= counter-clockwise from north). Without the flip
+                // every planet shows up east-west mirrored — most obvious on
+                // Earth (the West African bulge ends up on the wrong side).
+                // V is flipped (1-v) for the usual top-left vs bottom-left
+                // texture-origin reason. The flip also makes the surface rotate
+                // the correct way (eastward), which is what the deliberate
+                // -RotationAngleRad in DrawPlanet was always written assuming.
+                verts.Add(1f - u); verts.Add(1f - v);     // uv
             }
         }
         for (int i = 0; i < stacks; i++)

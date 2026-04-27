@@ -19,7 +19,21 @@ public sealed class Planet
     public double MeanLongitudeDeg { get; init; }
     public double OrbitalPeriodYears { get; init; }
 
-    /// <summary>Visual radius in world units (NOT physical). Mutable so the host can swap
+    // ---- Secular (per Julian century) rates of change of the Keplerian elements.
+    // When non-zero these are added linearly to the J2000 epoch values inside
+    // OrbitalMechanics.HeliocentricPosition, so for inner planets we get the proper
+    // Standish 1800-2050 mean motion + secular perturbations (Mercury and Venus
+    // transit dates land within seconds, instead of the multi-day drift you get
+    // from the J2000-only model). Default 0 keeps every body that doesn't supply
+    // them on the original simple-Keplerian path.
+    public double SemiMajorAxisDot { get; init; }
+    public double EccentricityDot { get; init; }
+    public double InclinationDotDeg { get; init; }
+    public double LongAscNodeDotDeg { get; init; }
+    public double ArgPerihelionDotDeg { get; init; }
+    public double MeanLongitudeDotDeg { get; init; }
+
+    /// <summary>Visual radius in world units (NOT physical).
     /// between an inflated artistic value and a real-scale (km-derived) value at runtime.</summary>
     public float VisualRadius { get; set; }
     /// <summary>Approximate real radius in km (for UI display).</summary>
@@ -354,6 +368,12 @@ public sealed class Planet
             ArgPerihelionDeg = d.ArgPerihelionDeg,
             MeanLongitudeDeg = d.MeanLongitudeDeg,
             OrbitalPeriodYears = d.OrbitalPeriodYears,
+            SemiMajorAxisDot = d.SemiMajorAxisDot,
+            EccentricityDot = d.EccentricityDot,
+            InclinationDotDeg = d.InclinationDotDeg,
+            LongAscNodeDotDeg = d.LongAscNodeDotDeg,
+            ArgPerihelionDotDeg = d.ArgPerihelionDotDeg,
+            MeanLongitudeDotDeg = d.MeanLongitudeDotDeg,
             VisualRadius = d.VisualRadius,
             RealRadiusKm = d.RealRadiusKm,
             ProceduralColor = new Vector3(
@@ -382,6 +402,12 @@ public sealed class Planet
         public double ArgPerihelionDeg { get; set; }
         public double MeanLongitudeDeg { get; set; }
         public double OrbitalPeriodYears { get; set; }
+        public double SemiMajorAxisDot { get; set; }
+        public double EccentricityDot { get; set; }
+        public double InclinationDotDeg { get; set; }
+        public double LongAscNodeDotDeg { get; set; }
+        public double ArgPerihelionDotDeg { get; set; }
+        public double MeanLongitudeDotDeg { get; set; }
         public float VisualRadius { get; set; }
         public double RealRadiusKm { get; set; }
         public float[]? Color { get; set; }

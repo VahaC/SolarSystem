@@ -85,17 +85,6 @@ public sealed class SolarSystemWindow : GameWindow
     // refer into this array, offset by _planets.Length.
     private Planet[] _extraBodies = [];
 
-    /// <summary>Eclipse-bookmark demo override: the simplified circular Moon model
-    /// (sidereal period only, fixed inclination, no nodal regression) does NOT
-    /// reproduce real Sun-Earth-Moon alignments on the historical dates listed in
-    /// the Eclipse bookmarks. To make those bookmarks actually demonstrate the
-    /// eclipse they advertise, jumping to an Eclipse entry arms this trigger; for
-    /// a ±1-day window around it the Moon's position is forced onto the Sun-Earth
-    /// line (between Sun and Earth for a solar eclipse, or on the anti-Sun side
-    /// for a lunar eclipse). Outside the window the regular orbital model runs.</summary>
-    private double _eclipseDemoSimDays = double.NaN;
-    private bool _eclipseDemoIsLunar;
-
     // Q3: name search prompt state. Mirrors the date-seek prompt's lifecycle.
     private bool _searchActive;
     private string _searchBuffer = "";
@@ -389,64 +378,73 @@ public sealed class SolarSystemWindow : GameWindow
             }
         }
 
-        // Moon orbits Earth in a circle inclined to the ecliptic. In compressed mode
-        // the radius is artistic (visible without engulfing Venus); in real-scale mode
-        // it uses the actual ~384,400 km converted via the same AU/km scale.
+        // Moon orbits Earth using the truncated Brown / ELP-2000 lunar theory
+        // (Meeus Ch.47, see LunarEphemeris.cs). The geocentric ecliptic vector
+        // (λ, β, Δ) we get back is calibrated against real ephemerides, so eclipse
+        // bookmarks now produce the actual alignment they advertise (± a few minutes).
+        // In compressed scale we keep the artistic radius MoonOrbitRadius so the
+        // Moon stays comfortably visible inside the Earth–Venus gap; the angular
+        // alignment that drives eclipses is preserved by normalising before scaling.
         {
             var earth = _planets[2];
-            float moonRadius = OrbitalMechanics.RealScale
-                ? (float)(384400.0 * OrbitalMechanics.KmToWorldRealScale)
-                : MoonOrbitRadius;
+            var lunar = LunarEphemeris.Compute(_simDays);
+            double lonRad = lunar.LongitudeDeg * OrbitalMechanics.DegToRad;
+            double latRad = lunar.LatitudeDeg * OrbitalMechanics.DegToRad;
+            double cosB = Math.Cos(latRad);
+            // Geocentric ecliptic Cartesian (km), then mapped to world (x, z, -y).
+            double mx = lunar.DistanceKm * cosB * Math.Cos(lonRad);
+            double my = lunar.DistanceKm * cosB * Math.Sin(lonRad);
+            double mz = lunar.DistanceKm * Math.Sin(latRad);
+            Vector3 moonOffsetKm = new((float)mx, (float)mz, (float)-my);
 
-            // Eclipse-bookmark demo: while the user is within ±1 day of an armed
-            // Eclipse trigger, snap the Moon onto the Sun-Earth line so that the
-            // bookmark actually reproduces the eclipse it advertises (see
-            // _eclipseDemoSimDays). Outside the window the regular orbital model
-            // takes over again.
-            bool eclipseDemo = !double.IsNaN(_eclipseDemoSimDays)
-                               && Math.Abs(_simDays - _eclipseDemoSimDays) < 1.0;
-            if (eclipseDemo)
+            Vector3 offset;
+            if (OrbitalMechanics.RealScale)
             {
-                Vector3 sunToEarth = earth.Position;
-                Vector3 dir = sunToEarth.LengthSquared > 1e-12f
-                    ? Vector3.Normalize(sunToEarth)
-                    : Vector3.UnitX;
-                // Solar eclipse: Moon between Sun (origin) and Earth → toward the Sun
-                // from Earth's centre, i.e. -dir. Lunar eclipse: Moon in Earth's
-                // shadow → away from the Sun, i.e. +dir.
-                Vector3 offset = (_eclipseDemoIsLunar ? dir : -dir) * moonRadius;
-                _moon.Position = earth.Position + offset;
+                offset = moonOffsetKm * (float)OrbitalMechanics.KmToWorldRealScale;
             }
             else
             {
-                double moonAngle = (_simDays / MoonOrbitalPeriodDays) * TwoPi;
-                float cx = (float)Math.Cos(moonAngle) * moonRadius;
-                float cz = (float)Math.Sin(moonAngle) * moonRadius;
-                float incl = MathHelper.DegreesToRadians(MoonOrbitInclinationDeg);
-                float cy = cz * MathF.Sin(incl);
-                cz *= MathF.Cos(incl);
-                _moon.Position = earth.Position + new Vector3(cx, cy, cz);
+                Vector3 dir = moonOffsetKm.LengthSquared > 1e-6f
+                    ? Vector3.Normalize(moonOffsetKm)
+                    : Vector3.UnitX;
+                offset = dir * MoonOrbitRadius;
             }
-            _moon.HelioAU = earth.HelioAU; // for info panel "distance from Sun" approximation
+            _moon.Position = earth.Position + offset;
+            _moon.HelioAU = earth.HelioAU; // info-panel "distance from Sun" approximation
             double mAngle = (_simDays * 24.0 / _moon.RotationPeriodHours) * TwoPi;
             mAngle %= TwoPi;
             if (mAngle < 0) mAngle += TwoPi;
             _moon.RotationAngleRad = (float)mAngle;
         }
 
-        // S6: Galilean moons + Titan. Same pattern as Earth's Moon: simple circular
-        // orbits inclined to the ecliptic, with a per-moon phase offset so the four
-        // Jovian moons don't start clustered on top of each other. Skipping the full
-        // orbital-element solve here is fine — at the artistic radii used in
-        // compressed mode the visual error is well below one pixel.
+        // S6: Galilean moons + Titan. Io / Europa / Ganymede / Callisto get their
+        // planetocentric mean longitudes u₁..u₄ from Meeus' low-precision Galilean
+        // theory (Ch.44, see GalileanEphemeris.cs), so Jupiter transits and shadow
+        // casts on the cloud tops happen at the historically correct dates.
+        // Titan stays on its simple circular orbit — no eclipse bookmark depends on
+        // it, and Saturn is too far away for naked-eye occultation effects to
+        // matter at this scale.
+        var galilean = GalileanEphemeris.MeanLongitudes(_simDays);
         foreach (var m in _moons)
         {
             var host = _planets[m.HostPlanetIndex];
             float r = OrbitalMechanics.RealScale
                 ? (float)(m.RealOrbitRadiusKm * OrbitalMechanics.KmToWorldRealScale)
                 : m.ArtisticOrbitRadius;
-            double angle = (_simDays / m.OrbitalPeriodDays) * TwoPi
-                           + m.PhaseDeg * OrbitalMechanics.DegToRad;
+
+            double angle;
+            switch (m.Body.Name)
+            {
+                case "Io":       angle = galilean.Io       * OrbitalMechanics.DegToRad; break;
+                case "Europa":   angle = galilean.Europa   * OrbitalMechanics.DegToRad; break;
+                case "Ganymede": angle = galilean.Ganymede * OrbitalMechanics.DegToRad; break;
+                case "Callisto": angle = galilean.Callisto * OrbitalMechanics.DegToRad; break;
+                default: // Titan and any future non-Galilean satellite.
+                    angle = (_simDays / m.OrbitalPeriodDays) * TwoPi
+                            + m.PhaseDeg * OrbitalMechanics.DegToRad;
+                    break;
+            }
+
             float cx = (float)Math.Cos(angle) * r;
             float cz = (float)Math.Sin(angle) * r;
             float incl = MathHelper.DegreesToRadians(m.OrbitInclinationDeg);
@@ -628,7 +626,6 @@ public sealed class SolarSystemWindow : GameWindow
             if (entry is { } ev)
             {
                 _simDays = Bookmarks.ToSimDays(ev);
-                ArmEclipseDemo(ev);
                 ClearAllTrails();
                 _audio.PlayTick();
                 _seekFeedback = $"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}";
@@ -1184,7 +1181,6 @@ public sealed class SolarSystemWindow : GameWindow
             if (jumpTo is { } ev)
             {
                 _simDays = Bookmarks.ToSimDays(ev);
-                ArmEclipseDemo(ev);
                 ClearAllTrails();
                 _audio.PlayTick();
                 _seekFeedback = $"{ev.Kind}: {ev.Title} \u2014 {ev.Date:yyyy-MM-dd}";
@@ -1474,23 +1470,6 @@ public sealed class SolarSystemWindow : GameWindow
         foreach (var p in visible)
             if (n < spheres.Length) spheres[n++] = new Vector4(p.Position, p.VisualRadius);
         _renderer.SetShadowCasters(spheres.AsSpan(0, n));
-    }
-
-    /// <summary>Arm the Moon-position override around an Eclipse bookmark so that
-    /// jumping to it actually demonstrates the alignment. See <see cref="_eclipseDemoSimDays"/>
-    /// for rationale; non-Eclipse bookmarks clear the trigger.</summary>
-    private void ArmEclipseDemo(in Bookmarks.Entry ev)
-    {
-        if (ev.Kind == BookmarkKind.Eclipse)
-        {
-            _eclipseDemoSimDays = ev.SimDays;
-            _eclipseDemoIsLunar = !string.IsNullOrEmpty(ev.Tags)
-                && ev.Tags.Contains("lunar", StringComparison.OrdinalIgnoreCase);
-        }
-        else
-        {
-            _eclipseDemoSimDays = double.NaN;
-        }
     }
 
     /// <summary>Build a host-orbiting moon: load its texture, set its initial spin

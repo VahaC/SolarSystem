@@ -28,16 +28,31 @@ public static class OrbitalMechanics
     /// </summary>
     public static Vector3d HeliocentricPosition(Planet p, double daysSinceJ2000)
     {
-        double a = p.SemiMajorAxisAU;
-        double e = p.Eccentricity;
-        double i = p.InclinationDeg * DegToRad;
-        double Om = p.LongAscNodeDeg * DegToRad;
-        double w = p.ArgPerihelionDeg * DegToRad;
-        double L0 = p.MeanLongitudeDeg * DegToRad;
+        // Julian centuries since J2000 — used to evolve the Keplerian elements
+        // when the body supplies Standish secular rates. Bodies that don't
+        // (every dwarf, the comet, the moons) keep their static J2000 values
+        // because all the *_Dot fields default to 0.
+        double T = daysSinceJ2000 / 36525.0;
 
-        // Mean motion (rad/day): 2π / (period_years * 365.25)
-        double n = 2.0 * Math.PI / (p.OrbitalPeriodYears * 365.25);
-        double L = L0 + n * daysSinceJ2000;
+        double a = p.SemiMajorAxisAU + p.SemiMajorAxisDot * T;
+        double e = p.Eccentricity    + p.EccentricityDot  * T;
+        double i = (p.InclinationDeg   + p.InclinationDotDeg   * T) * DegToRad;
+        double Om = (p.LongAscNodeDeg  + p.LongAscNodeDotDeg   * T) * DegToRad;
+        double w = (p.ArgPerihelionDeg + p.ArgPerihelionDotDeg * T) * DegToRad;
+
+        // Mean longitude: prefer the explicit Standish L_dot (deg/century) when
+        // provided — it is the authoritative full mean motion. Fall back to the
+        // empirical 2π/period_years rate for bodies that only ship a J2000 epoch.
+        double L;
+        if (p.MeanLongitudeDotDeg != 0.0)
+        {
+            L = (p.MeanLongitudeDeg + p.MeanLongitudeDotDeg * T) * DegToRad;
+        }
+        else
+        {
+            double n = 2.0 * Math.PI / (p.OrbitalPeriodYears * 365.25);
+            L = p.MeanLongitudeDeg * DegToRad + n * daysSinceJ2000;
+        }
         double M = L - (Om + w);
 
         double E = SolveKepler(M, e);
