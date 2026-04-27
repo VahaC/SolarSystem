@@ -134,10 +134,12 @@ public sealed class SettingsPanel
         {
             row.Bounds = new Box(panelX + pad, y - textTopOffset, panelW - pad * 2f, lineH);
             string text;
+            // Resolve the label key on every draw so language toggles take effect immediately.
+            string label = Localization.T(row.Label);
             if (row is ToggleRow t)
             {
                 bool on = t.Get();
-                text = $"[{(on ? 'x' : ' ')}] {row.Label}";
+                text = $"[{(on ? 'x' : ' ')}] {label}";
             }
             else if (row is SliderRow s)
             {
@@ -148,7 +150,7 @@ public sealed class SettingsPanel
                 var bar = new System.Text.StringBuilder();
                 for (int i = 0; i < Cells; i++) bar.Append(i < filled ? '█' : '░');
                 string barStr = bar.ToString();
-                string prefix = $"{row.Label}  ";
+                string prefix = $"{label}  ";
                 string minus  = "- ";
                 string open   = "[";
                 string close  = "] ";

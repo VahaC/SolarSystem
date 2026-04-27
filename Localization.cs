@@ -104,11 +104,49 @@ public static class Localization
             "Shift+P     play camera path (Q10)\n" +
             "F1          settings panel (Q12)\n" +
             "F2          cycle language (Q13)\n" +
+            "F4          tidal-lock arrows (S13)\n" +
+            "F5          alignment indicator (S14)\n" +
+            "F6          N-body mode (S15)\n" +
+            "Z           toggle lens flare (V6)\n" +
             "Tab         help full / mini / off (Q14)\n" +
             "S           toggle audio cues (Q15)\n" +
             "Esc         quit",
         ["ui.campath.banner"]  = "Camera path",
         ["ui.tooltip.sun"]     = "Sun",
+        // S13 / S14 / S15 toggle banners.
+        ["ui.tidal.on"]        = "Tidal-lock arrows: ON",
+        ["ui.tidal.off"]       = "Tidal-lock arrows: OFF",
+        ["ui.alignment.on"]    = "Alignment indicator: ON",
+        ["ui.alignment.off"]   = "Alignment indicator: OFF",
+        ["ui.alignment.banner"]= "Alignment ({0}): {1}",
+        ["ui.nbody.on"]        = "N-body mode: ON (mutual gravity)",
+        ["ui.nbody.off"]       = "N-body mode: OFF (analytic Kepler)",
+        ["ui.nbody.banner"]    = "N-body mode (S15)",
+        ["ui.lensflare.on"]    = "Lens flare: ON",
+        ["ui.lensflare.off"]   = "Lens flare: OFF",
+        // Settings panel (F1) row labels.
+        ["ui.settings.orbits"]        = "Orbits",
+        ["ui.settings.trails"]        = "Trails",
+        ["ui.settings.labels"]        = "Labels",
+        ["ui.settings.axes"]          = "Axes",
+        ["ui.settings.dwarfs"]        = "Dwarfs",
+        ["ui.settings.constellations"]= "Constellations",
+        ["ui.settings.probes"]        = "Probes",
+        ["ui.settings.lagrange"]      = "Lagrange",
+        ["ui.settings.meteors"]       = "Meteors",
+        ["ui.settings.aurora"]        = "Aurora",
+        ["ui.settings.solarwind"]     = "Solar wind",
+        ["ui.settings.solarflares"]   = "Solar flares",
+        ["ui.settings.bloom"]         = "Bloom",
+        ["ui.settings.fxaa"]          = "FXAA",
+        ["ui.settings.pbr"]           = "PBR",
+        ["ui.settings.audio"]         = "Audio",
+        ["ui.settings.timeline"]      = "Timeline",
+        ["ui.settings.tidal"]         = "Tidal lock (S13)",
+        ["ui.settings.alignment"]     = "Alignment (S14)",
+        ["ui.settings.nbody"]         = "N-body (S15)",
+        ["ui.settings.lensflare"]     = "Lens flare",
+        ["ui.settings.speed"]         = "Speed (d/s)",
     };
 
     private static Dictionary<string, string> _active = _en;

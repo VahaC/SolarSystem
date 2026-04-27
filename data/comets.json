@@ -1,0 +1,53 @@
+{
+  "_comment": "S16: real comet catalogue. Each entry follows the same Keplerian-element layout used by data/planets.json (J2000 epoch, no secular rates), plus visual styling. The full set is loaded by CometCatalog at startup, and each comet gets its own ellipse polyline + ion/dust particle tail. Missing/parse-error → falls back to a built-in single-Halley list.",
+  "comets": [
+    {
+      "name": "Halley",
+      "semiMajorAxisAU": 17.834, "eccentricity": 0.96714,
+      "inclinationDeg": 162.26, "longAscNodeDeg": 58.42,
+      "argPerihelionDeg": 111.33,
+      "meanLongitudeDeg": 208.13,
+      "orbitalPeriodYears": 75.32,
+      "visualRadius": 0.18, "realRadiusKm": 5.5,
+      "color": [0.85, 0.88, 0.95],
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 52.8,
+      "emissionRate": 800, "tailLifetime": 4.0, "tailSpeed": 18.0
+    },
+    {
+      "name": "Hale-Bopp",
+      "semiMajorAxisAU": 186.0, "eccentricity": 0.99511,
+      "inclinationDeg": 89.43, "longAscNodeDeg": 282.47,
+      "argPerihelionDeg": 130.59,
+      "meanLongitudeDeg": 71.06,
+      "orbitalPeriodYears": 2533.0,
+      "visualRadius": 0.22, "realRadiusKm": 30.0,
+      "color": [0.95, 0.95, 1.00],
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 11.4,
+      "emissionRate": 1100, "tailLifetime": 5.5, "tailSpeed": 22.0
+    },
+    {
+      "name": "NEOWISE",
+      "semiMajorAxisAU": 358.5, "eccentricity": 0.99918,
+      "inclinationDeg": 128.94, "longAscNodeDeg": 60.03,
+      "argPerihelionDeg": 37.27,
+      "meanLongitudeDeg": 157.33,
+      "orbitalPeriodYears": 6790.0,
+      "visualRadius": 0.16, "realRadiusKm": 5.0,
+      "color": [0.98, 0.85, 0.55],
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 7.58,
+      "emissionRate": 700, "tailLifetime": 4.5, "tailSpeed": 20.0
+    },
+    {
+      "name": "Encke",
+      "semiMajorAxisAU": 2.215, "eccentricity": 0.84833,
+      "inclinationDeg": 11.78, "longAscNodeDeg": 334.57,
+      "argPerihelionDeg": 186.55,
+      "meanLongitudeDeg": 161.12,
+      "orbitalPeriodYears": 3.30,
+      "visualRadius": 0.14, "realRadiusKm": 2.4,
+      "color": [0.80, 0.90, 1.00],
+      "axisTiltDeg": 0.0, "rotationPeriodHours": 11.08,
+      "emissionRate": 500, "tailLifetime": 3.0, "tailSpeed": 14.0
+    }
+  ]
+}

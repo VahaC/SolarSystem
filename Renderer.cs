@@ -78,6 +78,9 @@ public sealed class Renderer : IDisposable
     /// <summary>V15: when off the planet shader ignores the ocean mask and lets the
     /// whole surface glint uniformly (legacy look).</summary>
     public bool OceanMaskEnabled { get; set; } = true;
+    /// <summary>V6: master toggle for the screen-space lens-flare ghosts drawn
+    /// along the Sun-through-centre axis. Off hides the coloured blob chain.</summary>
+    public bool LensFlareEnabled { get; set; } = true;
 
     // V8: shadow casters (xyz=center, w=radius). Uploaded once per frame and
     // consumed by every subsequent DrawPlanet call until cleared / overwritten.
@@ -928,6 +931,12 @@ public sealed class Renderer : IDisposable
     /// shader program just to render a single line loop.</summary>
     public void DrawCometOrbit(Camera cam, Comet comet) => comet.DrawOrbit(cam, _orbitShader);
 
+    /// <summary>S16: draw the orbit polyline of every comet in the loaded catalogue.</summary>
+    public void DrawCometOrbits(Camera cam, Comets comets)
+    {
+        foreach (var c in comets.All) c.DrawOrbit(cam, _orbitShader);
+    }
+
     public void DrawSaturnRing(Camera cam, Planet saturn, Vector3 sunPos)
     {
         _ringShader.Use();
@@ -965,6 +974,7 @@ public sealed class Renderer : IDisposable
     /// behind the camera or off-screen by a large margin.</summary>
     public void DrawLensFlare(Camera cam, Vector3 sunPos)
     {
+        if (!LensFlareEnabled) return;
         var fwd = (cam.Target - cam.Eye);
         var toSun = sunPos - cam.Eye;
         if (fwd.LengthSquared < 1e-8f || toSun.LengthSquared < 1e-8f) return;

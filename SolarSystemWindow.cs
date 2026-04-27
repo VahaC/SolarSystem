@@ -32,8 +32,13 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly SolarWind _solarWind = new();
     private readonly SolarFlares _solarFlares = new();
     private readonly AsteroidBelt _belt = new();
-    private readonly Comet _comet = new();
+    // S16: catalogue-driven set of comets (Halley, Hale-Bopp, NEOWISE, Encke, ...).
+    private readonly Comets _comets = new();
     private readonly Constellations _constellations = new();
+    // S13 / S14 / S15.
+    private readonly TidalLock _tidalLock = new();
+    private readonly PlanetaryAlignment _alignment = new();
+    private readonly NBodyIntegrator _nbody = new();
     // S9–S12.
     private readonly Probes _probes = new();
     private readonly LagrangePoints _lagrange = new();
@@ -123,6 +128,16 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showMeteors = true;
     /// <summary>V13: master toggle for the polar aurora ribbons (Earth + Jupiter).</summary>
     private bool _showAurora = true;
+    /// <summary>S13: tidal-lock arrows on the Moon, Galileans and Titan.</summary>
+    private bool _showTidalLock;
+    /// <summary>S14: heliocentric-alignment indicator (line + banner when ≥3 planets are within ~12°).</summary>
+    private bool _showAlignment = true;
+    /// <summary>S15: switch the major-planet update path from analytic Kepler to a
+    /// leapfrog N-body integrator that includes mutual gravity.</summary>
+    private bool _nbodyEnabled;
+    /// <summary>S15: set whenever sim time jumps far enough that the integrator
+    /// state must be re-snapshot from the analytic Kepler positions on the next frame.</summary>
+    private bool _nbodyDirty;
     /// <summary>R4: when true each planet's spin angle is evaluated at
     /// <c>simDays - r/c</c> (where r is its heliocentric distance), so the day/night
     /// terminator falls where it was when the photons currently illuminating it
@@ -160,12 +175,14 @@ public sealed class SolarSystemWindow : GameWindow
         _solarWind.Initialize();
         _solarFlares.Initialize();
         _belt.Initialize();
-        _comet.Initialize();
+        _comets.Initialize();
         _constellations.Initialize();
         _probes.Initialize();
         _lagrange.Initialize();
         _meteors.Initialize();
         _aurora.Initialize();
+        _tidalLock.Initialize();
+        _alignment.Initialize();
 
         // Q13: discover available languages and apply current OS culture if a
         // matching translation file ships next to the binary.
@@ -182,7 +199,7 @@ public sealed class SolarSystemWindow : GameWindow
         var initVp = new Vector2(ClientSize.X, ClientSize.Y);
         _solarWind.SetViewport(initVp);
         _solarFlares.SetViewport(initVp);
-        _comet.SetViewport(initVp);
+        _comets.SetViewport(initVp);
         _belt.SetViewport(initVp);
         _meteors.SetViewport(initVp);
         _font = new BitmapFont();
@@ -281,7 +298,7 @@ public sealed class SolarSystemWindow : GameWindow
         // Order matters — index = _planets.Length + position-in-this-array.
         var extras = new List<Planet> { _moon };
         foreach (var m in _moons) extras.Add(m.Body);
-        extras.Add(_comet.Body);
+        foreach (var b in _comets.Bodies) extras.Add(b);
         _extraBodies = [.. extras];
 
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
@@ -306,7 +323,7 @@ public sealed class SolarSystemWindow : GameWindow
         var vp = new Vector2(e.Width, e.Height);
         _solarWind.SetViewport(vp);
         _solarFlares.SetViewport(vp);
-        _comet.SetViewport(vp);
+        _comets.SetViewport(vp);
         _belt.SetViewport(vp);
         _meteors.SetViewport(vp);
     }
@@ -341,9 +358,24 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Update positions and axial rotation
         const double TwoPi = Math.PI * 2.0;
-        foreach (var p in _planets)
+
+        // S15: when N-body mode is on, the major planets are advanced by the
+        // leapfrog integrator (mutual gravity) instead of pure analytic Kepler.
+        // Dwarfs / moons / comets still ride analytic Kepler — they don't
+        // perturb the majors meaningfully and switching them off is the most
+        // useful "perturbation visible" comparison.
+        if (_nbodyEnabled)
         {
-            p.HelioAU = OrbitalMechanics.HeliocentricPosition(p, _simDays);
+            if (_nbodyDirty) { _nbody.Resync(_majorPlanets, _simDays); _nbodyDirty = false; }
+            else _nbody.Step(_majorPlanets, _simDays);
+        }
+
+        for (int pi = 0; pi < _planets.Length; pi++)
+        {
+            var p = _planets[pi];
+            bool nbodyDriven = _nbodyEnabled && pi < _dwarfStart;
+            if (!nbodyDriven)
+                p.HelioAU = OrbitalMechanics.HeliocentricPosition(p, _simDays);
             float s = OrbitalMechanics.OrbitWorldScale(p.SemiMajorAxisAU);
             p.Position = new Vector3(
                 (float)(p.HelioAU.X * s),
@@ -509,8 +541,13 @@ public sealed class SolarSystemWindow : GameWindow
         // a pure function of _simDays, not an integration), so they stay correctly
         // placed after a date jump or while the simulation is frozen.
         _belt.Update(_simDays);
-        _comet.UpdatePosition(_simDays);
-        _comet.UpdateTail(fxDt, Vector3.Zero);
+        _comets.UpdatePosition(_simDays);
+        _comets.UpdateTail(fxDt, Vector3.Zero);
+
+        // S14: recompute alignment groups from the freshly-updated positions.
+        _alignment.Enabled = _showAlignment;
+        _alignment.Update(_majorPlanets);
+        _tidalLock.Enabled = _showTidalLock;
 
         // S9–S11: probes / Lagrange points / meteor showers. All read the planets
         // table that was just updated above, so they're spatially in sync.
@@ -776,6 +813,11 @@ public sealed class SolarSystemWindow : GameWindow
                 _seekFeedback = $"Bloom: {(_renderer.BloomEnabled ? "ON" : "OFF")}";
                 _seekFeedbackUntil = GLFW.GetTime() + 2.0;
                 break;
+            case Keys.Z:
+                _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled;
+                _seekFeedback = Localization.T(_renderer.LensFlareEnabled ? "ui.lensflare.on" : "ui.lensflare.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
 
             // Q7: HUD overlay (FPS + particle counts).
             case Keys.GraveAccent: _showHud = !_showHud; break;
@@ -799,6 +841,23 @@ public sealed class SolarSystemWindow : GameWindow
                 _seekFeedbackUntil = GLFW.GetTime() + 2.0;
                 break;
             }
+            // S13 / S14 / S15.
+            case Keys.F4:
+                _showTidalLock = !_showTidalLock;
+                _seekFeedback = Localization.T(_showTidalLock ? "ui.tidal.on" : "ui.tidal.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.F5:
+                _showAlignment = !_showAlignment;
+                _seekFeedback = Localization.T(_showAlignment ? "ui.alignment.on" : "ui.alignment.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            case Keys.F6:
+                _nbodyEnabled = !_nbodyEnabled;
+                if (_nbodyEnabled) _nbodyDirty = true;
+                _seekFeedback = Localization.T(_nbodyEnabled ? "ui.nbody.on" : "ui.nbody.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 2.5;
+                break;
             case Keys.S:
                 _audio.Enabled = !_audio.Enabled;
                 _seekFeedback = _audio.Enabled
@@ -883,7 +942,7 @@ public sealed class SolarSystemWindow : GameWindow
         if (_showOrbits)
         {
             _renderer.DrawOrbits(_camera, visible);
-            _renderer.DrawCometOrbit(_camera, _comet);
+            _renderer.DrawCometOrbits(_camera, _comets);
         }
         if (_showTrails) _renderer.DrawTrails(_camera, visible);
 
@@ -893,7 +952,8 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.DrawPlanet(_camera, _moon, Vector3.Zero);
         foreach (var m in _moons)
             _renderer.DrawPlanet(_camera, m.Body, Vector3.Zero);
-        _renderer.DrawPlanet(_camera, _comet.Body, Vector3.Zero);
+        foreach (var c in _comets.All)
+            _renderer.DrawPlanet(_camera, c.Body, Vector3.Zero);
 
         // V3: cloud layer for any planet that has one (currently just Earth).
         // Drawn after the opaque planet pass so alpha-blending composites over
@@ -905,7 +965,7 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
 
         _belt.Draw(_camera);
-        _comet.DrawTail(_camera);
+        _comets.DrawTails(_camera);
         _solarWind.Draw(_camera);
         _solarFlares.Draw(_camera);
 
@@ -916,6 +976,16 @@ public sealed class SolarSystemWindow : GameWindow
         if (_showMeteors) _meteors.Draw(_camera);
 
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, visible);
+
+        // S13: tidal-lock arrows on every locked moon. The Moon, Galileans and
+        // Titan are all locked to their hosts; the arrow tip points at the host.
+        if (_showTidalLock)
+        {
+            _tidalLock.Draw(_camera, EnumerateTidalPairs());
+        }
+
+        // S14: heliocentric-alignment indicator (line through aligned majors).
+        if (_showAlignment) _alignment.Draw(_camera, _majorPlanets);
 
         // V13: aurora ribbons at Earth + Jupiter poles. Drawn inside the HDR pass
         // so the bright crests feed the bloom composite. Intensity is boosted when
@@ -958,9 +1028,10 @@ public sealed class SolarSystemWindow : GameWindow
                 _renderer.DrawLabel(_font, _camera,
                     m.Body.Position + new Vector3(0, m.Body.VisualRadius + 0.4f, 0),
                     m.Body.Name, 11, new Vector4(0.85f, 0.85f, 0.85f, 0.85f));
-            _renderer.DrawLabel(_font, _camera,
-                _comet.Body.Position + new Vector3(0, _comet.Body.VisualRadius + 0.5f, 0),
-                _comet.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
+            foreach (var c in _comets.All)
+                _renderer.DrawLabel(_font, _camera,
+                    c.Body.Position + new Vector3(0, c.Body.VisualRadius + 0.5f, 0),
+                    c.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
         }
 
         // S9: probe labels (always drawn when probes are visible — they're the
@@ -1073,6 +1144,28 @@ public sealed class SolarSystemWindow : GameWindow
                 new Vector4(1f, 0.85f, 0.6f, 0.95f));
         }
 
+        // S14: alignment banner — list every active group, top-right above the meteor banner.
+        if (_showAlignment && _alignment.ActiveGroups.Count > 0)
+        {
+            float y = _renderer.FramebufferSize.Y - 56f;
+            foreach (var g in _alignment.ActiveGroups)
+            {
+                string txt = $"✦ {Localization.T("ui.alignment.banner", g.PlanetIndices.Length, g.Names)}";
+                _renderer.DrawText(_font, txt,
+                    _renderer.FramebufferSize.X - 360f, y, 13f,
+                    new Vector4(1f, 0.95f, 0.6f, 0.95f));
+                y -= 20f;
+            }
+        }
+
+        // S15: small banner while the N-body integrator is driving the majors.
+        if (_nbodyEnabled)
+        {
+            _renderer.DrawText(_font, $"⚙ {Localization.T("ui.nbody.banner")}",
+                _renderer.FramebufferSize.X - 360f, 12f + 6 * 18f, 13f,
+                new Vector4(0.65f, 1f, 0.85f, 0.95f));
+        }
+
         // Date-seek prompt: top-center modal overlay while active. Drawn after every
         // other UI so it can't be occluded.
         if (_seekActive)
@@ -1139,7 +1232,7 @@ public sealed class SolarSystemWindow : GameWindow
                 $"{Localization.T("ui.hud.scale")}     {scale}\n" +
                 $"{Localization.T("ui.hud.wind")}      {_solarWind.ActiveCount} / {_solarWind.MaxParticles}\n" +
                 $"{Localization.T("ui.hud.flares")}    {_solarFlares.ActiveCount} / {_solarFlares.MaxParticles}\n" +
-                $"{Localization.T("ui.hud.comet")}     {_comet.ActiveCount} / {_comet.MaxParticles}\n" +
+                $"{Localization.T("ui.hud.comet")}     {_comets.TotalActive} / {_comets.TotalMax}\n" +
                 $"{Localization.T("ui.hud.belt")}      {_belt.Count}";
             _renderer.DrawText(_font, hud,
                 _renderer.FramebufferSize.X - 220f, 12f, 14f,
@@ -1398,7 +1491,7 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Orbit lines were uploaded once with the old scale — rebuild them.
         _renderer.BuildOrbits(_planets);
-        _comet.RebuildOrbit();
+        _comets.RebuildOrbits();
 
         // Trails accumulated in the old world scale would suddenly jump on toggle.
         ClearAllTrails();
@@ -1428,6 +1521,9 @@ public sealed class SolarSystemWindow : GameWindow
     {
         if (_planets == null) return;
         foreach (var p in _planets) p.TrailReset();
+        // S15: any large jump (date seek, scrubber, bookmark) clears trails — also
+        // resync the N-body integrator so it doesn't try to integrate across the gap.
+        _nbodyDirty = true;
     }
 
     /// <summary>R3: derive the sky shader's brightness/saturation from the camera's
@@ -1480,6 +1576,17 @@ public sealed class SolarSystemWindow : GameWindow
     /// to match the host system's tidal locking convention, and wrap the resulting
     /// <see cref="Planet"/> with the orbital parameters needed by the per-frame
     /// position update in <see cref="OnUpdateFrame"/>.</summary>
+    /// <summary>S13: enumerate every tidally-locked moon together with its host
+    /// planet. The Moon (host = Earth), the Galileans (host = Jupiter) and Titan
+    /// (host = Saturn) are all spin-locked, so a single hub-axis arrow toward
+    /// the host correctly indicates their permanent near-side orientation.</summary>
+    private IEnumerable<(Planet moon, Planet host)> EnumerateTidalPairs()
+    {
+        yield return (_moon, _planets[2]);
+        foreach (var m in _moons)
+            yield return (m.Body, _planets[m.HostPlanetIndex]);
+    }
+
     private static Moon CreateMoon(string name, int hostIndex,
                                    double realRadiusKm, Vector3 color, string texture,
                                    float visualRadius, float axisTiltDeg, double rotationHours,
@@ -1567,26 +1674,32 @@ public sealed class SolarSystemWindow : GameWindow
     /// keyboard shortcuts without any extra state plumbing.</summary>
     private void BuildSettingsPanel()
     {
+        // Labels are localisation keys resolved by SettingsPanel.Draw at render time
+        // so the F2 language toggle re-translates them without rebuilding the panel.
         _settings.Clear();
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Orbits",        Get = () => _showOrbits,        Toggle = () => _showOrbits = !_showOrbits });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Trails",        Get = () => _showTrails,        Toggle = () => { _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Labels",        Get = () => _showLabels,        Toggle = () => _showLabels = !_showLabels });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Axes",          Get = () => _showAxes,          Toggle = () => _showAxes = !_showAxes });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Dwarfs",        Get = () => _showDwarfs,        Toggle = () => _showDwarfs = !_showDwarfs });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Constellations",Get = () => _showConstellations,Toggle = () => { _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Probes",        Get = () => _showProbes,        Toggle = () => _showProbes = !_showProbes });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Lagrange",      Get = () => _showLagrange,      Toggle = () => _showLagrange = !_showLagrange });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Meteors",       Get = () => _showMeteors,       Toggle = () => _showMeteors = !_showMeteors });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Aurora",        Get = () => _showAurora,        Toggle = () => { _showAurora = !_showAurora; _aurora.Enabled = _showAurora; } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Solar wind",    Get = () => _solarWind.Enabled, Toggle = () => _solarWind.Enabled = !_solarWind.Enabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Solar flares",  Get = () => _solarFlares.Enabled, Toggle = () => _solarFlares.Enabled = !_solarFlares.Enabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Bloom",         Get = () => _renderer.BloomEnabled, Toggle = () => _renderer.BloomEnabled = !_renderer.BloomEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "FXAA",          Get = () => _renderer.FxaaEnabled,  Toggle = () => _renderer.FxaaEnabled = !_renderer.FxaaEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "PBR",           Get = () => _renderer.PbrEnabled,   Toggle = () => _renderer.PbrEnabled = !_renderer.PbrEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Audio",         Get = () => _audio.Enabled,      Toggle = () => _audio.Enabled = !_audio.Enabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "Timeline",      Get = () => _scrubber.Visible,   Toggle = () => _scrubber.Visible = !_scrubber.Visible });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.orbits",        Get = () => _showOrbits,        Toggle = () => _showOrbits = !_showOrbits });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.trails",        Get = () => _showTrails,        Toggle = () => { _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.labels",        Get = () => _showLabels,        Toggle = () => _showLabels = !_showLabels });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.axes",          Get = () => _showAxes,          Toggle = () => _showAxes = !_showAxes });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.dwarfs",        Get = () => _showDwarfs,        Toggle = () => _showDwarfs = !_showDwarfs });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.constellations",Get = () => _showConstellations,Toggle = () => { _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.probes",        Get = () => _showProbes,        Toggle = () => _showProbes = !_showProbes });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lagrange",      Get = () => _showLagrange,      Toggle = () => _showLagrange = !_showLagrange });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.meteors",       Get = () => _showMeteors,       Toggle = () => _showMeteors = !_showMeteors });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.aurora",        Get = () => _showAurora,        Toggle = () => { _showAurora = !_showAurora; _aurora.Enabled = _showAurora; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.solarwind",     Get = () => _solarWind.Enabled, Toggle = () => _solarWind.Enabled = !_solarWind.Enabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.solarflares",   Get = () => _solarFlares.Enabled, Toggle = () => _solarFlares.Enabled = !_solarFlares.Enabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.bloom",         Get = () => _renderer.BloomEnabled, Toggle = () => _renderer.BloomEnabled = !_renderer.BloomEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.fxaa",          Get = () => _renderer.FxaaEnabled,  Toggle = () => _renderer.FxaaEnabled = !_renderer.FxaaEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.pbr",           Get = () => _renderer.PbrEnabled,   Toggle = () => _renderer.PbrEnabled = !_renderer.PbrEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.audio",         Get = () => _audio.Enabled,      Toggle = () => _audio.Enabled = !_audio.Enabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.timeline",      Get = () => _scrubber.Visible,   Toggle = () => _scrubber.Visible = !_scrubber.Visible });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.tidal",         Get = () => _showTidalLock,    Toggle = () => _showTidalLock = !_showTidalLock });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.alignment",     Get = () => _showAlignment,    Toggle = () => _showAlignment = !_showAlignment });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.nbody",         Get = () => _nbodyEnabled,     Toggle = () => { _nbodyEnabled = !_nbodyEnabled; if (_nbodyEnabled) _nbodyDirty = true; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lensflare",     Get = () => _renderer.LensFlareEnabled, Toggle = () => _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled });
         _settings.Add(new SettingsPanel.SliderRow {
-            Label  = "Speed (d/s)",
+            Label  = "ui.settings.speed",
             Get    = () => (float)_daysPerSecond,
             Set    = v => _daysPerSecond = v,
             Min    = -1000f, Max = 1000f, Step = 1f, Format = "{0:0.##}"
@@ -1638,12 +1751,14 @@ public sealed class SolarSystemWindow : GameWindow
         _solarWind.Dispose();
         _solarFlares.Dispose();
         _belt.Dispose();
-        _comet.Dispose();
+        _comets.Dispose();
         _constellations.Dispose();
         _probes.Dispose();
         _lagrange.Dispose();
         _meteors.Dispose();
         _aurora.Dispose();
+        _tidalLock.Dispose();
+        _alignment.Dispose();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();
@@ -1796,6 +1911,12 @@ public sealed class SolarSystemWindow : GameWindow
         public int  HelpMode { get; set; }
         public bool AudioEnabled { get; set; }
         public string Language { get; set; } = "en";
+        // S13 / S14 / S15 toggles.
+        public bool ShowTidalLock { get; set; }
+        public bool ShowAlignment { get; set; } = true;
+        public bool NBodyEnabled { get; set; }
+        // V6: screen-space lens-flare ghosts along the Sun-through-centre axis.
+        public bool LensFlareEnabled { get; set; } = true;
     }
 
     private void TryLoadPersistedState()
@@ -1854,6 +1975,12 @@ public sealed class SolarSystemWindow : GameWindow
             _audio.Enabled = s.AudioEnabled;
             if (!string.IsNullOrEmpty(s.Language)) Localization.SetLanguage(s.Language);
 
+            _showTidalLock = s.ShowTidalLock;
+            _showAlignment = s.ShowAlignment;
+            _nbodyEnabled = s.NBodyEnabled;
+            if (_nbodyEnabled) _nbodyDirty = true;
+            _renderer.LensFlareEnabled = s.LensFlareEnabled;
+
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
         catch (Exception ex)
@@ -1907,6 +2034,10 @@ public sealed class SolarSystemWindow : GameWindow
                 HelpMode = _helpMode,
                 AudioEnabled = _audio.Enabled,
                 Language = Localization.CurrentLanguage,
+                ShowTidalLock = _showTidalLock,
+                ShowAlignment = _showAlignment,
+                NBodyEnabled = _nbodyEnabled,
+                LensFlareEnabled = _renderer.LensFlareEnabled,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

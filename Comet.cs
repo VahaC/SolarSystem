@@ -46,31 +46,16 @@ public sealed class Comet : IDisposable
 
     private int _orbitVao, _orbitVbo, _orbitCount;
 
-    public Comet(int maxParticles = 4000)
+    /// <summary>S16: a comet now wraps an externally-supplied <see cref="Planet"/>
+    /// nucleus so the same particle-tail pipeline can drive a whole catalogue of
+    /// real-world comets (Halley, Hale–Bopp, NEOWISE, Encke, …) loaded from
+    /// <c>data/comets.json</c> via <see cref="CometCatalog"/>.</summary>
+    public Comet(Planet body, int maxParticles = 4000)
     {
+        Body = body;
         MaxParticles = maxParticles;
         _particles = new Particle[maxParticles];
         _packed = new float[maxParticles * 4];
-
-        // 1P/Halley J2000 elements (NASA JPL approximations). Retrograde inclination >90°.
-        Body = new Planet
-        {
-            Name = "Halley",
-            SemiMajorAxisAU = 17.834,
-            Eccentricity = 0.96714,
-            InclinationDeg = 162.26,
-            LongAscNodeDeg = 58.42,
-            ArgPerihelionDeg = 111.33,
-            // MeanLongitude at J2000: chosen so the 1986 perihelion lands near simDays = -5066.
-            MeanLongitudeDeg = 58.42 + 111.33 + 38.38, // L = Ω + ω + M0
-            OrbitalPeriodYears = 75.32,
-            VisualRadius = 0.18f,
-            RealRadiusKm = 5.5,
-            ProceduralColor = new Vector3(0.85f, 0.88f, 0.95f),
-            TextureFile = "", // procedural fallback
-            AxisTiltDeg = 0f,
-            RotationPeriodHours = 52.8,
-        };
     }
 
     public void Initialize()

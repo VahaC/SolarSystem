@@ -14,7 +14,10 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **Five IAU dwarf planets** — Ceres, Pluto, Haumea, Makemake, Eris, with full J2000 elements; they reuse the same orbit / trail / picking pipeline as the majors.
 - **Major moons** — Earth's Moon plus the Galileans (Io, Europa, Ganymede, Callisto) and Titan, each on its own circular inclined orbit around its host planet.
 - **Asteroid belt** — 8000 rocks with precomputed Keplerian elements, advanced per frame by a Newton-Raphson Kepler solve, rendered as additively-blended `GL_POINTS`.
-- **Comet** — a 1P/Halley-like ellipse (a≈17.83 AU, e≈0.967, i=162°) with its own orbit polyline and a CPU-particle ion/dust tail that ignites near perihelion (intensity ∝ 1/r).
+- **Comet catalogue** — a data-driven set of real comets (Halley, Hale–Bopp, NEOWISE, Encke) loaded from `data/comets.json`, each with its own orbit polyline and CPU-particle ion/dust tail that ignites near perihelion (intensity ∝ 1/r).
+- **Tidal-lock arrows** (`F4`) — additive arrow on every spin-locked moon (Earth's Moon, Galileans, Titan) pointing at its host, visualising permanent near-side orientation.
+- **Planetary alignment indicator** (`F5`) — union-find over heliocentric longitudes flags every group of ≥3 majors within ~12°; a glowing line links them and a top-right banner names the participants.
+- **N-body perturbation mode** (`F6`) — optional kick-drift-kick leapfrog integrator with mutual gravity between the eight majors (Sun fixed at origin), so e.g. Jupiter’s pull on Mars is visible over decadal time-scales. Resyncs from analytic Kepler on date jumps.
 - **Axial rotation & tilt**, including retrograde spin for Venus/Uranus.
 - **Data-driven** — planet & dwarf elements live in `data/planets.json` (with comments + trailing commas); the built-in tables are a fallback.
 
@@ -96,6 +99,9 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 | **Shift + P** | Play recorded camera path (Catmull-Rom flythrough); **Ctrl + Shift + P** clears all |
 | **F1** | Toggle in-app settings panel (Q12) |
 | **F2** | Cycle UI language (Q13) — drops `data/lang.<code>.json` are auto-detected |
+| **F4** | Toggle tidal-lock arrows on locked moons (S13) |
+| **F5** | Toggle heliocentric-alignment indicator (S14) |
+| **F6** | Toggle N-body perturbation mode (S15) |
 | **Tab** | Cycle help overlay: full → minimal → hidden (Q14) |
 | **S** | Toggle audio cues (Q15) |
 | **Ctrl + Shift + B** | Step **back** through the eclipse / transit calendar (Q8 / S12) |
@@ -146,7 +152,7 @@ textures/
 └── 8k_stars_milky_way.jpg       # V7: equirectangular sky
 ```
 
-Planet / dwarf-planet orbital elements live in `data/planets.json`; constellation lines in `data/constellations.json`. Both are loaded at start-up with a built-in fallback if missing or malformed.
+Planet / dwarf-planet orbital elements live in `data/planets.json`; the comet catalogue in `data/comets.json`; constellation lines in `data/constellations.json`. All are loaded at start-up with a built-in fallback if missing or malformed.
 
 > Public-domain 8K planet maps are available from **[Solar System Scope](https://www.solarsystemscope.com/textures/)**.
 
@@ -165,7 +171,12 @@ Planet.cs                 planet data + JSON loader + built-in fallback
 Moon.cs                   moon record (host, orbit radius, period, phase)
 OrbitalMechanics.cs       Kepler solver, heliocentric → world-space scaling
 AsteroidBelt.cs           8000-rock Kepler-solved instanced-quad cloud
-Comet.cs                  Halley-like ellipse + ion/dust particle tail
+Comet.cs                  comet nucleus + ion/dust particle tail (drives every catalogue entry)
+CometCatalog.cs           data/comets.json loader (Halley, Hale–Bopp, NEOWISE, Encke fallback)
+Comets.cs                  plural manager wrapping the loaded `Comet[]`
+TidalLock.cs               S13: tidal-lock arrows on locked moons
+PlanetaryAlignment.cs      S14: heliocentric-alignment line + banner indicator
+NBodyIntegrator.cs         S15: leapfrog mutual-gravity integrator (AU, days, M⊙)
 Constellations.cs         skybox-anchored RA/Dec line overlay
 SolarWind.cs              instanced-quad particle pool radiating from the Sun
 SolarFlares.cs            instanced-quad eruption sprites that feed bloom
