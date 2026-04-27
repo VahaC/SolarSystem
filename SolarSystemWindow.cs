@@ -73,6 +73,9 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly SettingsPanel _settings = new();
     private readonly AudioService _audio = new();
     private readonly BookmarksSidebar _bookSidebar = new();
+    // A12: per-frame profiler (GPU time-elapsed queries + CPU stopwatch per pass).
+    private readonly FrameProfiler _profiler = new();
+    private bool _showProfiler;
     private BitmapFont _font = null!;
     /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
     /// are the IAU dwarf planets appended by <see cref="Planet.CreateDwarfPlanets"/>.
@@ -209,7 +212,7 @@ public sealed class SolarSystemWindow : GameWindow
         _aurora.Initialize();
         _tidalLock.Initialize();
         _alignment.Initialize();
-
+        _profiler.Initialize();
         // Q13: discover available languages and apply current OS culture if a
         // matching translation file ships next to the binary.
         Localization.DiscoverAvailable();
@@ -964,6 +967,13 @@ public sealed class SolarSystemWindow : GameWindow
                 ToggleRecording();
                 break;
 
+            // A12: F10 toggles the per-pass profiler overlay (GPU + CPU ms).
+            case Keys.F10:
+                _showProfiler = !_showProfiler;
+                _seekFeedback = Localization.T(_showProfiler ? "ui.profiler.on" : "ui.profiler.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+
             // A8: toggle GPU compute path for the asteroid belt's Kepler solve.
             case Keys.F8:
                 if (_belt.GpuComputeAvailable)
@@ -1030,6 +1040,10 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnRenderFrame(FrameEventArgs args)
     {
         base.OnRenderFrame(args);
+        // A12: per-frame profiler. BeginFrame harvests last frame's GPU
+        // timer-query results; BeginPass/EndPass wrap each major render group.
+        _profiler.Enabled = _showProfiler;
+        _profiler.BeginFrame();
         _renderer.BeginScene();
 
         // Choose between the full body list (planets + dwarfs) and the major-only
@@ -1045,6 +1059,7 @@ public sealed class SolarSystemWindow : GameWindow
         // to a planet the colour is punched up for a "near-orbit" feel.
         UpdateAdaptiveStars(visible);
 
+        _profiler.BeginPass("sky");
         _renderer.DrawStars(_camera);
         if (_showConstellations) _constellations.Draw(_camera);
         if (_showOrbits)
@@ -1053,7 +1068,9 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawCometOrbits(_camera, _comets);
         }
         if (_showTrails) _renderer.DrawTrails(_camera, visible);
+        _profiler.EndPass();
 
+        _profiler.BeginPass("planets");
         _renderer.DrawSun(_camera, Vector3.Zero, SunRadius);
         foreach (var p in visible)
             _renderer.DrawPlanet(_camera, p, Vector3.Zero);
@@ -1071,7 +1088,9 @@ public sealed class SolarSystemWindow : GameWindow
 
         var saturn = _planets[5];
         _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
+        _profiler.EndPass();
 
+        _profiler.BeginPass("particles");
         _belt.Draw(_camera);
         _comets.DrawTails(_camera);
         _solarWind.Draw(_camera);
@@ -1082,7 +1101,7 @@ public sealed class SolarSystemWindow : GameWindow
         if (_showProbes) _probes.Draw(_camera);
         if (_showLagrange) { _lagrange.Enabled = true; _lagrange.Draw(_camera); }
         if (_showMeteors) _meteors.Draw(_camera);
-
+        _profiler.EndPass();
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, visible);
 
         // S13: tidal-lock arrows on every locked moon. The Moon, Galileans and
@@ -1113,12 +1132,16 @@ public sealed class SolarSystemWindow : GameWindow
         // Apply HDR bright-pass + Gaussian blur + additive composite to the
         // default framebuffer. All subsequent 2D overlays (labels, UI panels)
         // are drawn directly to the default framebuffer and therefore unaffected.
+        _profiler.BeginPass("bloom");
         _renderer.EndSceneAndApplyBloom();
 
         // V6: lens flare ghosts. Drawn after the composite so the chain isn't
         // smeared by bloom and looks like internal reflections in the lens
         // rather than a halo of the Sun itself.
         _renderer.DrawLensFlare(_camera, Vector3.Zero);
+        _profiler.EndPass();
+
+        _profiler.BeginPass("ui");
 
         // Labels
         if (_showLabels)
@@ -1443,7 +1466,13 @@ public sealed class SolarSystemWindow : GameWindow
                 new Vector4(1f, 0.25f, 0.25f, 0.95f));
         }
 
+        // A12: profiler overlay (per-pass GPU + CPU times). Drawn last so it sits
+        // on top of everything else; toggled with F10.
+        _profiler.EndPass();
+        if (_showProfiler) DrawProfilerOverlay();
+
         SwapBuffers();
+        _profiler.EndFrame();
 
         // A7 (interactive): dump every rendered frame while F9-recording is on.
         // Done after SwapBuffers (back-buffer still holds the just-shown image)
@@ -1938,6 +1967,7 @@ public sealed class SolarSystemWindow : GameWindow
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.nbody",         Get = () => _nbodyEnabled,     Toggle = () => { _nbodyEnabled = !_nbodyEnabled; if (_nbodyEnabled) _nbodyDirty = true; } });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lensflare",     Get = () => _renderer.LensFlareEnabled, Toggle = () => _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.gpubelt",       Get = () => _belt.UseGpuCompute,        Toggle = () => { if (_belt.GpuComputeAvailable) _belt.UseGpuCompute = !_belt.UseGpuCompute; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.profiler",      Get = () => _showProfiler,              Toggle = () => _showProfiler = !_showProfiler });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.fullscreen",    Get = () => _fullscreen,                Toggle = ToggleFullscreen });
         _settings.Add(new SettingsPanel.SliderRow {
             Label  = "ui.settings.speed",
@@ -2056,6 +2086,41 @@ public sealed class SolarSystemWindow : GameWindow
         }
         _searchActive = false;
         _searchBuffer = "";
+    }
+
+    // -------- A12: per-frame profiler overlay ----------------------------------
+
+    private void DrawProfilerOverlay()
+    {
+        // Lay the profiler card in the bottom-right corner so it doesn't fight
+        // the top-right Q7 HUD or the bottom-left help / info panels.
+        var sb = new System.Text.StringBuilder();
+        sb.Append(Localization.T("ui.profiler.title")).Append('\n');
+        sb.Append(Localization.T("ui.profiler.frame", _profiler.FrameCpuMs)).Append('\n');
+        double gpuTotal = 0, cpuTotal = 0;
+        foreach (var p in _profiler.Passes) { gpuTotal += p.GpuMs; cpuTotal += p.CpuMs; }
+        if (_profiler.GpuQueriesAvailable)
+            sb.Append(Localization.T("ui.profiler.header.gpu")).Append('\n');
+        else
+            sb.Append(Localization.T("ui.profiler.header.cpu")).Append('\n');
+        foreach (var p in _profiler.Passes)
+        {
+            string label = Localization.T("ui.profiler.pass." + p.Name);
+            if (_profiler.GpuQueriesAvailable)
+                sb.Append($"{label,-10} {p.GpuMs,5:0.00} | {p.CpuMs,5:0.00}\n");
+            else
+                sb.Append($"{label,-10} {p.CpuMs,5:0.00}\n");
+        }
+        if (_profiler.GpuQueriesAvailable)
+            sb.Append($"{Localization.T("ui.profiler.total"),-10} {gpuTotal,5:0.00} | {cpuTotal,5:0.00}");
+        else
+            sb.Append($"{Localization.T("ui.profiler.total"),-10} {cpuTotal,5:0.00}");
+
+        float width = 260f;
+        float x = _renderer.FramebufferSize.X - width - 12f;
+        float y = _renderer.FramebufferSize.Y - 220f;
+        _renderer.DrawText(_font, sb.ToString(), x, y, 13f,
+            new Vector4(0.85f, 1f, 0.7f, 0.95f));
     }
 
     // -------- Q4 / Q11: cross-platform screenshot via SkiaSharp ----------------
@@ -2304,6 +2369,8 @@ public sealed class SolarSystemWindow : GameWindow
         public bool GpuAsteroidsEnabled { get; set; } = true;
         // Alt+Enter borderless fullscreen toggle.
         public bool Fullscreen { get; set; }
+        // A12: per-frame profiler overlay (F10).
+        public bool ShowProfiler { get; set; }
     }
 
     private void TryLoadPersistedState()
@@ -2370,6 +2437,7 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.LensFlareEnabled = s.LensFlareEnabled;
             _belt.UseGpuCompute = s.GpuAsteroidsEnabled;
             SetFullscreen(s.Fullscreen);
+            _showProfiler = s.ShowProfiler;
 
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
@@ -2430,6 +2498,7 @@ public sealed class SolarSystemWindow : GameWindow
                 LensFlareEnabled = _renderer.LensFlareEnabled,
                 GpuAsteroidsEnabled = _belt.UseGpuCompute,
                 Fullscreen = _fullscreen,
+                ShowProfiler = _showProfiler,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

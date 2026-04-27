@@ -380,8 +380,12 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 - **Dropped reference:** `System.Drawing.Common` (unused since Q11's SkiaSharp screenshot path) was removed from the csproj — it isn't AOT-friendly and pulled in a needless P/Invoke surface.
 - **No runtime toggle:** AOT is purely build-time, so there is nothing to flip from the F1 settings panel; the regular `dotnet run` developer loop continues to use the JIT.
 
-### A12 — Per-frame profiler overlay *(planned)*
-- Extend the `~` HUD with cumulative GPU + CPU timing per pass (sky, planets, particles, bloom) using `GL_TIMESTAMP` queries.
+### A12 — Per-frame profiler overlay
+- **What:** an on-screen card with per-pass GPU + CPU timings sampled directly from the OpenGL pipeline so you can see exactly where each frame's milliseconds go without an external tool.
+- **Key:** `F10` toggles the overlay (`_showProfiler`); also exposed as a row in the F1 settings panel (`ui.settings.profiler`). The choice is persisted in `state.json` (`PersistedState.ShowProfiler`) and surfaced as a banner via `ui.profiler.on/off`.
+- **Implementation:** `FrameProfiler` allocates a triple-buffered ring of `GL_TIME_ELAPSED` queries (one per pass per slot) and a parallel `Stopwatch`. `OnRenderFrame` calls `BeginFrame` (which harvests the slot 2 frames ago — already complete, so no `glGetQueryObject` stall), then wraps the renderer in `BeginPass(name)` / `EndPass()` markers. Five passes are tracked: `sky` (DrawStars + constellations + orbits + trails), `planets` (Sun + planets + moons + comet bodies + clouds + Saturn ring), `particles` (asteroid belt + comet tails + solar wind / flares + probes / Lagrange / meteors), `bloom` (`EndSceneAndApplyBloom` + lens flare) and `ui` (labels + tooltip + HUD + scrubber + settings + sidebar). Per-pass GPU + CPU times are EMA-smoothed (α = 0.15).
+- **Overlay:** `DrawProfilerOverlay` renders a bottom-right card with one line per pass formatted as `gpu | cpu (ms)` plus a `total` row and the whole-frame CPU number. Localised pass labels (`ui.profiler.pass.*`) so the table reads naturally in every language.
+- **Fallback:** if the driver doesn't expose `GL_TIME_ELAPSED` the profiler sets `GpuQueriesAvailable = false` and the overlay omits the GPU column — CPU numbers keep working.
 
 ### Borderless fullscreen toggle (Alt+Enter)
 - **Key:** `Alt + Enter` flips between the normal window and `WindowState.Fullscreen` on the current monitor. Also exposed as a row in the F1 settings panel (`ui.settings.fullscreen`) so it can be enabled / disabled by mouse without the keyboard shortcut. The choice is persisted in `state.json` (`PersistedState.Fullscreen`) and re-applied on startup, so the window comes up in the same mode it was closed in.
@@ -411,6 +415,7 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 | `F6` | N-body mode |
 | `F7` | GLSL hot-reload |
 | `F8` | GPU asteroid belt (compute shader) |
+| `F10` | Per-frame profiler overlay (A12) |
 | `Alt+Enter` | Toggle borderless fullscreen |
 | `F1` | Settings panel |
 | `F2` | Cycle language |

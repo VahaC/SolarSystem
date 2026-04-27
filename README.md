@@ -179,6 +179,19 @@ AOT is purely build-time — there is no F1 / keyboard toggle. The standard
 Full reference in [docs/FEATURES.md#a11--native-aot](docs/FEATURES.md#a11--native-aot)
 ([UA](docs/FEATURES.uk.md#a11--native-aot)).
 
+### Per-frame profiler overlay (A12)
+
+Press **F10** (or tick the row in the F1 settings panel) to overlay a
+bottom-right card with per-pass GPU + CPU timings sampled from
+`GL_TIME_ELAPSED` queries — the renderer is split into `sky`, `planets`,
+`particles`, `bloom` and `ui` passes, each EMA-smoothed so the readout
+stays legible. Queries are triple-buffered so the GL thread never stalls
+on `glGetQueryObject`; drivers that don't expose timer queries
+automatically fall back to CPU-only numbers. The toggle is persisted in
+`state.json`. Full reference in
+[docs/FEATURES.md#a12--per-frame-profiler-overlay](docs/FEATURES.md#a12--per-frame-profiler-overlay)
+([UA](docs/FEATURES.uk.md#a12--per-frame-profiler-overlay)).
+
 ### Textures
 
 Place 8K Solar System textures in a `textures/` folder next to the executable. Files used (all optional — missing files fall back to procedural placeholders):

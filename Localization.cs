@@ -114,6 +114,7 @@ public static class Localization
             "F7          GLSL hot-reload (A6)\n" +
             "F8          GPU asteroid belt (A8)\n" +
             "F9          start / stop video recording (A7)\n" +
+            "F10         per-pass profiler overlay (A12)\n" +
             "Z           toggle lens flare (V6)\n" +
             "Alt+Enter   toggle fullscreen\n" +
             "Tab         help full / mini / off (Q14)\n" +
@@ -177,6 +178,20 @@ public static class Localization
         ["ui.settings.fullscreen"]    = "Fullscreen (Alt+Enter)",
         ["ui.fullscreen.on"]          = "Fullscreen: ON",
         ["ui.fullscreen.off"]         = "Fullscreen: OFF",
+        // A12: per-frame profiler overlay (F10).
+        ["ui.settings.profiler"]      = "Profiler (A12)",
+        ["ui.profiler.on"]            = "Profiler: ON",
+        ["ui.profiler.off"]           = "Profiler: OFF",
+        ["ui.profiler.title"]         = "Profiler (F10)",
+        ["ui.profiler.frame"]         = "frame      {0,5:0.00} ms",
+        ["ui.profiler.header.gpu"]    = "pass        gpu | cpu (ms)",
+        ["ui.profiler.header.cpu"]    = "pass         cpu (ms)",
+        ["ui.profiler.total"]         = "total",
+        ["ui.profiler.pass.sky"]      = "sky",
+        ["ui.profiler.pass.planets"]  = "planets",
+        ["ui.profiler.pass.particles"]= "particles",
+        ["ui.profiler.pass.bloom"]    = "bloom",
+        ["ui.profiler.pass.ui"]       = "ui",
     };
 
     private static Dictionary<string, string> _active = _en;
