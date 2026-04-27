@@ -100,15 +100,18 @@ public sealed class BitmapFont : IDisposable
             // Bake printable ASCII (32..126), Latin-1 supplement (160..255), the
             // full Cyrillic block (U+0400..U+04FF), General Punctuation
             // (U+2000..U+206F — em/en dash, ellipsis, smart quotes), Arrows
-            // (U+2190..U+21FF), Geometric Shapes (U+25A0..U+25FF — ▶ ◀ █ ░) and
-            // Miscellaneous Symbols (U+2600..U+26FF — ☄ ☀ etc.) so localized HUD
-            // strings render real glyphs instead of falling back to '?'.
+            // (U+2190..U+21FF), Box Drawing (U+2500..U+257F — ─ used in the
+            // bookmarks "now" separator), Block Elements (U+2580..U+259F — █ ░),
+            // Geometric Shapes (U+25A0..U+25FF — ▶ ◀) and Miscellaneous Symbols
+            // (U+2600..U+26FF — ☄ ☀ etc.) so localized HUD strings render real
+            // glyphs instead of falling back to '?'.
             var codepoints = new List<int>(1024);
             for (int c = 32; c < 127; c++) codepoints.Add(c);
             for (int c = 160; c < 256; c++) codepoints.Add(c);
             for (int c = 0x0400; c <= 0x04FF; c++) codepoints.Add(c);
             for (int c = 0x2000; c <= 0x206F; c++) codepoints.Add(c);
             for (int c = 0x2190; c <= 0x21FF; c++) codepoints.Add(c);
+            for (int c = 0x2500; c <= 0x257F; c++) codepoints.Add(c);
             for (int c = 0x2580; c <= 0x259F; c++) codepoints.Add(c);
             for (int c = 0x25A0; c <= 0x25FF; c++) codepoints.Add(c);
             for (int c = 0x2600; c <= 0x26FF; c++) codepoints.Add(c);
