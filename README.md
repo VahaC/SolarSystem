@@ -91,6 +91,14 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 | **K** | Toggle polar aurora ribbons (V13) |
 | **I** | Toggle PBR planet shading (V14) |
 | **Q** | Toggle ocean specular mask (V15) |
+| **V** | Toggle bottom timeline scrubber (Q9) |
+| **Ctrl + 1‥9** | Record camera waypoint (Q10); add **Shift** to clear that slot |
+| **Shift + P** | Play recorded camera path (Catmull-Rom flythrough); **Ctrl + Shift + P** clears all |
+| **F1** | Toggle in-app settings panel (Q12) |
+| **F2** | Cycle UI language (Q13) — drops `data/lang.<code>.json` are auto-detected |
+| **Tab** | Cycle help overlay: full → minimal → hidden (Q14) |
+| **S** | Toggle audio cues (Q15) |
+| **Ctrl + Shift + B** | Step **back** through the eclipse / transit calendar (Q8 / S12) |
 | **Esc** | Quit |
 
 ---
@@ -100,7 +108,7 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 ### Requirements
 
 - **.NET 10 SDK** (preview or later)
-- **Windows / Linux / macOS** — font rasterisation runs on SkiaSharp (with `SkiaSharp.NativeAssets.Linux.NoDependencies` for Linux); only the optional `F12` screenshot key is Windows-only.
+- **Windows / Linux / macOS** — font rasterisation runs on SkiaSharp (with `SkiaSharp.NativeAssets.Linux.NoDependencies` for Linux); the `F12` screenshot path now uses SkiaSharp too (Q11), so the entire pipeline is cross-platform.
 - A GPU supporting OpenGL 4.5
 
 ### Run

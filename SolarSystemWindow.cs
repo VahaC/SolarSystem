@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.Versioning;
 using System.Text.Json;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
@@ -42,6 +41,12 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly Bookmarks _bookmarks = new();
     // V13.
     private readonly Aurora _aurora = new();
+    // Q9 / Q10 / Q12 / Q15.
+    private readonly TimelineScrubber _scrubber = new();
+    private readonly CameraPath _camPath = new();
+    private readonly SettingsPanel _settings = new();
+    private readonly AudioService _audio = new();
+    private readonly BookmarksSidebar _bookSidebar = new();
     private BitmapFont _font = null!;
     /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
     /// are the IAU dwarf planets appended by <see cref="Planet.CreateDwarfPlanets"/>.
@@ -94,6 +99,9 @@ public sealed class SolarSystemWindow : GameWindow
     private double _fpsAccum;
     private int _fpsFrames;
     private double _fpsValue;
+
+    // Q14: help-overlay mode. 0 = full, 1 = minimal (date + speed only), 2 = hidden.
+    private int _helpMode;
 
     // Q5: persisted UI state file.
     private static string StateFilePath => Path.Combine(
@@ -158,6 +166,16 @@ public sealed class SolarSystemWindow : GameWindow
         _lagrange.Initialize();
         _meteors.Initialize();
         _aurora.Initialize();
+
+        // Q13: discover available languages and apply current OS culture if a
+        // matching translation file ships next to the binary.
+        Localization.DiscoverAvailable();
+        var sysLang = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        if (Localization.Available.Contains(sysLang, StringComparer.OrdinalIgnoreCase))
+            Localization.SetLanguage(sysLang);
+
+        // Q10: restore previously recorded camera-path waypoints.
+        _camPath.TryLoadFromDisk();
 
         // A4: instanced quad particles size their billboards in clip space using
         // the current viewport, so push it once now and again on every resize.
@@ -269,7 +287,12 @@ public sealed class SolarSystemWindow : GameWindow
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
         _camera.ResetDefault();
 
-        // Q5: restore persisted UI state. Done last so it can override the freshly
+        // Q12: populate the in-app settings panel with toggle/slider rows backed
+        // by closures over the same fields the keyboard shortcuts already touch,
+        // so the panel and the hotkeys are always in sync.
+        BuildSettingsPanel();
+
+        // Q5: restore persisted UI state.
         // initialised camera / toggles / scale mode.
         TryLoadPersistedState();
     }
@@ -292,8 +315,29 @@ public sealed class SolarSystemWindow : GameWindow
     {
         base.OnUpdateFrame(args);
 
-        if (!_paused)
+        // Q9: keep the scrubber's bar rectangle in sync with the live viewport
+        // before any mouse-down hit-tests it.
+        _scrubber.Layout(_renderer.FramebufferSize.X, _renderer.FramebufferSize.Y);
+
+        // Q9: scrubber drag overrides normal sim-time advance.
+        if (_scrubber.IsDragging)
+        {
+            var newDays = _scrubber.UpdateDrag(_mousePos);
+            if (newDays.HasValue)
+            {
+                if (Math.Abs(newDays.Value - _simDays) > 0.5)
+                {
+                    _simDays = newDays.Value;
+                    ClearAllTrails();
+                }
+            }
+        }
+        else if (!_paused)
             _simDays += _daysPerSecond * args.Time;
+
+        // Q10: camera-path playback drives Yaw/Pitch/Distance/Target directly,
+        // so the per-frame "follow focused body" branch is suppressed below.
+        _camPath.Update(args.Time, _camera);
 
         // Update positions and axial rotation
         const double TwoPi = Math.PI * 2.0;
@@ -412,7 +456,7 @@ public sealed class SolarSystemWindow : GameWindow
             _camera.Distance = MathHelper.Lerp(_focusStartDistance, _focusEndDistance, s);
             if (t >= 1f) _focusTransitioning = false;
         }
-        else
+        else if (!_camPath.IsPlaying)
         {
             var followed = GetBody(_focusIndex);
             if (followed != null) _camera.Target = followed.Position;
@@ -529,18 +573,56 @@ public sealed class SolarSystemWindow : GameWindow
             return;
         }
 
-        // S12: Ctrl+B cycles eclipse / transit bookmarks. Handled before the bare B
-        // key (currently unbound) so a future binding doesn't fight with it.
-        if (e.Key == Keys.B && (e.Modifiers & KeyModifiers.Control) != 0)
+        // Q8 / S12: F3 toggles the bookmarks sidebar. (Ctrl+B is reserved by the
+        // host OS, so the sidebar uses an F-key like the other panels.)
+        if (e.Key == Keys.F3)
         {
-            var entry = _bookmarks.Next(_simDays);
+            _bookSidebar.Visible = !_bookSidebar.Visible;
+            _seekFeedback = $"Bookmarks: {(_bookSidebar.Visible ? "ON" : "OFF")}";
+            _seekFeedbackUntil = GLFW.GetTime() + 1.5;
+            return;
+        }
+
+        // S12: Ctrl+E cycles eclipse / transit bookmarks. Handled before the bare E
+        // key (auto-exposure toggle) so the modifier variant doesn't also fire it.
+        if (e.Key == Keys.E && (e.Modifiers & KeyModifiers.Control) != 0)
+        {
+            // Q8: Ctrl+Shift+E steps backward, Ctrl+E forward.
+            var entry = (e.Modifiers & KeyModifiers.Shift) != 0
+                ? _bookmarks.Prev(_simDays)
+                : _bookmarks.Next(_simDays);
             if (entry is { } ev)
             {
                 _simDays = Bookmarks.ToSimDays(ev);
                 ClearAllTrails();
+                _audio.PlayTick();
                 _seekFeedback = $"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}";
                 _seekFeedbackUntil = GLFW.GetTime() + 4.0;
             }
+            return;
+        }
+
+        // Q10: Ctrl+1..9 records a camera waypoint, Ctrl+Shift+1..9 clears it,
+        // Shift+P plays the current path, Ctrl+Shift+P clears all slots.
+        if ((e.Modifiers & KeyModifiers.Control) != 0 && TryHandleCameraPathKey(e))
+            return;
+        if (e.Key == Keys.P && (e.Modifiers & KeyModifiers.Shift) != 0)
+        {
+            if ((e.Modifiers & KeyModifiers.Control) != 0)
+            {
+                _camPath.ClearAll();
+                _seekFeedback = "Camera path cleared";
+            }
+            else if (_camPath.Play(6.0))
+            {
+                _audio.PlayWhoosh();
+                _seekFeedback = "Playing camera path…";
+            }
+            else
+            {
+                _seekFeedback = "Need ≥ 2 waypoints — record with Ctrl+1..9";
+            }
+            _seekFeedbackUntil = GLFW.GetTime() + 2.5;
             return;
         }
 
@@ -622,6 +704,7 @@ public sealed class SolarSystemWindow : GameWindow
                 _seekFeedbackUntil = GLFW.GetTime() + 2.0;
                 break;
             case Keys.E:
+                if ((e.Modifiers & KeyModifiers.Control) != 0) break; // handled above as bookmark cycle
                 _renderer.AutoExposureEnabled = !_renderer.AutoExposureEnabled;
                 _seekFeedback = $"Auto-exposure: {(_renderer.AutoExposureEnabled ? "ON" : "OFF")}";
                 _seekFeedbackUntil = GLFW.GetTime() + 2.0;
@@ -661,9 +744,37 @@ public sealed class SolarSystemWindow : GameWindow
             // Q7: HUD overlay (FPS + particle counts).
             case Keys.GraveAccent: _showHud = !_showHud; break;
 
+            // Q9 / Q12 / Q13 / Q14 / Q15.
+            case Keys.V:
+                _scrubber.Visible = !_scrubber.Visible;
+                _seekFeedback = $"Timeline: {(_scrubber.Visible ? "ON" : "OFF")}";
+                _seekFeedbackUntil = GLFW.GetTime() + 1.5;
+                break;
+            case Keys.Tab:
+                _helpMode = (_helpMode + 1) % 3;
+                break;
+            case Keys.F1:
+                _settings.Visible = !_settings.Visible;
+                break;
+            case Keys.F2:
+            {
+                var code = Localization.CycleNext();
+                _seekFeedback = Localization.T("ui.lang.toggled", code);
+                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+                break;
+            }
+            case Keys.S:
+                _audio.Enabled = !_audio.Enabled;
+                _seekFeedback = _audio.Enabled
+                    ? Localization.T("ui.audio.on")
+                    : Localization.T("ui.audio.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 1.5;
+                if (_audio.Enabled) _audio.PlayTick();
+                break;
+
             // Q4: screenshot to ./screenshots/<timestamp>.png.
             case Keys.F12:
-                if (OperatingSystem.IsWindows()) SaveScreenshot();
+                SaveScreenshot();
                 break;
 
             case Keys.KeyPadAdd:
@@ -848,95 +959,80 @@ public sealed class SolarSystemWindow : GameWindow
         // UI overlay
         var date = OrbitalMechanics.J2000.AddDays(_simDays);
         var white = new Vector4(1f, 1f, 1f, 0.95f);
-        _renderer.DrawText(_font, $"Date    {date:yyyy-MM-dd}", 12, 12, 16, white);
-        string hudSpeed = _paused
-            ? "Speed   PAUSED"
-            : $"Speed   {(_daysPerSecond < 0 ? "-" : "")}{Math.Abs(_daysPerSecond):0.##} d/s {(_daysPerSecond < 0 ? "(reverse)" : "")}";
-        _renderer.DrawText(_font, hudSpeed, 12, 32, 16, white);
-        _renderer.DrawText(_font, $"Orbits  {(_showOrbits ? "on" : "off")}    Labels  {(_showLabels ? "on" : "off")}", 12, 52, 14, white);
+        if (_helpMode != 2)
+        {
+            _renderer.DrawText(_font, $"{Localization.T("ui.date")}    {date:yyyy-MM-dd}", 12, 12, 16, white);
+            string hudSpeed = _paused
+                ? $"{Localization.T("ui.speed")}   {Localization.T("ui.paused")}"
+                : $"{Localization.T("ui.speed")}   {(_daysPerSecond < 0 ? "-" : "")}{Math.Abs(_daysPerSecond):0.##} d/s {(_daysPerSecond < 0 ? Localization.T("ui.speed.reverse") : "")}";
+            _renderer.DrawText(_font, hudSpeed, 12, 32, 16, white);
+            if (_helpMode == 0)
+                _renderer.DrawText(_font,
+                    $"{Localization.T("ui.orbits")}  {(_showOrbits ? Localization.T("ui.on") : Localization.T("ui.off"))}    " +
+                    $"{Localization.T("ui.labels")}  {(_showLabels ? Localization.T("ui.on") : Localization.T("ui.off"))}",
+                    12, 52, 14, white);
+        }
 
-        // Top-left help panel listing every available control.
+        // Top-left help panel listing every available control. Body comes from
+        // Localization so the entire list translates with F2; the heading uses
+        // the same `ui.help.title` key as the rest of the UI.
         var dim = new Vector4(0.85f, 0.9f, 1f, 0.85f);
-        const string help =
-            "Controls\n" +
-            "RMB drag    orbit camera\n" +
-            "MMB drag    pan camera\n" +
-            "Wheel       zoom\n" +
-            "Click body  show info\n" +
-            "Dbl-click   focus body\n" +
-            "Dbl empty   unfocus\n" +
-            "0           Sun  /  1-8 planet\n" +
-            "Space       pause / resume\n" +
-            ", / .       reverse / forward\n" +
-            "+ / -       sim speed\n" +
-            "O           toggle orbits\n" +
-            "L           toggle labels\n" +
-            "T           toggle trails\n" +
-            "A           toggle axes\n" +
-            "D           toggle dwarf planets\n" +
-            "C           toggle constellations\n" +
-            "P           toggle probes\n" +
-            "G           toggle Lagrange points\n" +
-            "M           toggle meteor showers\n" +
-            "Ctrl+B      cycle eclipse / transit\n" +
-            "J           jump to date / ±days\n" +
-            "Ctrl+F      search bodies\n" +
-            "F12         screenshot\n" +
-            "~           FPS / particle HUD\n" +
-            "W           toggle solar wind\n" +
-            "F           toggle solar flares\n" +
-            "R           real / compressed scale\n" +
-            "Y           toggle light-time delay\n" +
-            "B           toggle bloom (V1)\n" +
-            "H           toggle eclipses (V8)\n" +
-            "N           toggle atmosphere (V9)\n" +
-            "E           toggle auto-exposure (V10)\n" +
-            "X           toggle FXAA (V11)\n" +
-            "U           toggle sun corona (V12)\n" +
-            "K           toggle aurora (V13)\n" +
-            "I           toggle PBR shading (V14)\n" +
-            "Q           toggle ocean specular (V15)\n" +
-            "Esc         quit";
-        _renderer.DrawText(_font, help, 12, 78, 13, dim);
+        if (_helpMode == 0)
+        {
+            string help = Localization.T("ui.help.title") + "\n" + Localization.T("ui.help.body");
+            _renderer.DrawText(_font, help, 12, 78, 13, dim);
+        }
 
-        // Info panel (multi-line) for selected body
-        string info;
-        var selectedBody = GetBody(_selectedIndex);
-        if (selectedBody != null)
+        // Info panel (multi-line) for selected body. Hidden in minimal / hidden
+        // help modes (Q14: minimal = "just current speed + date").
+        if (_helpMode == 0)
         {
-            var p = selectedBody;
-            double dist = Math.Sqrt(p.HelioAU.X * p.HelioAU.X + p.HelioAU.Y * p.HelioAU.Y + p.HelioAU.Z * p.HelioAU.Z);
-            double dayHours = Math.Abs(p.RotationPeriodHours);
-            string daySuffix = p.RotationPeriodHours < 0 ? " (retro)" : "";
-            double yearDays = p.OrbitalPeriodYears * 365.25;
-            info =
-                $"{p.Name}\n" +
-                $"Radius  {p.RealRadiusKm:0} km\n" +
-                $"Day     {dayHours:0.##} h{daySuffix}\n" +
-                $"Year    {yearDays:0.#} d  /  {p.OrbitalPeriodYears:0.###} y\n" +
-                $"Dist    {dist:0.000} AU\n" +
-                $"Tilt    {p.AxisTiltDeg:0.##} deg";
+            string info;
+            var selectedBody = GetBody(_selectedIndex);
+            if (selectedBody != null)
+            {
+                var p = selectedBody;
+                double dist = Math.Sqrt(p.HelioAU.X * p.HelioAU.X + p.HelioAU.Y * p.HelioAU.Y + p.HelioAU.Z * p.HelioAU.Z);
+                double dayHours = Math.Abs(p.RotationPeriodHours);
+                string daySuffix = p.RotationPeriodHours < 0 ? Localization.T("ui.info.retro") : "";
+                double yearDays = p.OrbitalPeriodYears * 365.25;
+                info =
+                    $"{p.Name}\n" +
+                    $"{Localization.T("ui.info.radius")}  {p.RealRadiusKm:0} km\n" +
+                    $"{Localization.T("ui.info.day")}     {dayHours:0.##} h{daySuffix}\n" +
+                    $"{Localization.T("ui.info.year")}    {yearDays:0.#} d  /  {p.OrbitalPeriodYears:0.###} y\n" +
+                    $"{Localization.T("ui.info.dist")}    {dist:0.000} AU\n" +
+                    $"{Localization.T("ui.info.tilt")}    {p.AxisTiltDeg:0.##} deg";
+            }
+            else if (_selectedIndex == -1)
+            {
+                info =
+                    $"{Localization.T("ui.body.sun")}\n" +
+                    $"{Localization.T("ui.info.radius")}  695700 km\n" +
+                    $"{Localization.T("ui.info.day")}     {Localization.T("ui.info.sun.day")}\n" +
+                    $"{Localization.T("ui.info.mass")}    {Localization.T("ui.info.sun.mass")}\n" +
+                    $"{Localization.T("ui.info.type")}    {Localization.T("ui.info.sun.type")}";
+            }
+            else
+            {
+                info = Localization.T("ui.click.body");
+            }
+            // Draw multi-line panel anchored bottom-left. Lift it above the
+            // timeline scrubber bar when the scrubber is visible so they don't
+            // overlap (Q9 sits at viewportH-36 with ~50 px of vertical chrome).
+            int lineCount = 1;
+            foreach (char ch in info) if (ch == '\n') lineCount++;
+            const float infoSize = 14f;
+            float lineH = infoSize * (_font.LineHeight / _font.FontPixelSize);
+            float scrubberPad = _scrubber.Visible ? 56f : 0f;
+            float panelY = _renderer.FramebufferSize.Y - 12f - scrubberPad - lineCount * lineH;
+            _renderer.DrawText(_font, info, 12, panelY, infoSize, white);
         }
-        else if (_selectedIndex == -1)
-        {
-            info = "Sun\nRadius  695700 km\nDay     609.12 h (eq)\nMass    1.989e30 kg\nType    G2V star";
-        }
-        else
-        {
-            info = "Click a body for info\nDouble-click to focus\nDouble-click empty to unfocus";
-        }
-        // Draw multi-line panel anchored bottom-left.
-        int lineCount = 1;
-        foreach (char ch in info) if (ch == '\n') lineCount++;
-        const float infoSize = 14f;
-        float lineH = infoSize * (_font.LineHeight / _font.FontPixelSize);
-        float panelY = _renderer.FramebufferSize.Y - 12f - lineCount * lineH;
-        _renderer.DrawText(_font, info, 12, panelY, infoSize, white);
 
         // S11: live banner when a meteor shower is currently in its activity window.
         if (_showMeteors && _meteors.ActiveShowerName.Length > 0)
         {
-            _renderer.DrawText(_font, $"☄ {_meteors.ActiveShowerName} active",
+            _renderer.DrawText(_font, $"☄ {Localization.T("ui.meteors.active", _meteors.ActiveShowerName)}",
                 _renderer.FramebufferSize.X - 260f, _renderer.FramebufferSize.Y - 30f, 13f,
                 new Vector4(1f, 0.85f, 0.6f, 0.95f));
         }
@@ -945,7 +1041,7 @@ public sealed class SolarSystemWindow : GameWindow
         // other UI so it can't be occluded.
         if (_seekActive)
         {
-            string prompt = $"Jump to date (YYYY-MM-DD) or +/-N days:\n> {_seekBuffer}_";
+            string prompt = Localization.T("ui.seek.prompt", _seekBuffer);
             _renderer.DrawText(_font, prompt,
                 _renderer.FramebufferSize.X * 0.5f - 200f, 20f, 16f,
                 new Vector4(1f, 1f, 0.7f, 1f));
@@ -955,7 +1051,7 @@ public sealed class SolarSystemWindow : GameWindow
             // Q3: search prompt + top matches preview.
             var matches = FindNameMatches(_searchBuffer, max: 5);
             var sb = new System.Text.StringBuilder();
-            sb.Append("Search body (Enter=focus, Esc=cancel):\n> ").Append(_searchBuffer).Append('_');
+            sb.Append(Localization.T("ui.search.prompt", _searchBuffer));
             if (matches.Count > 0)
             {
                 sb.Append('\n');
@@ -980,7 +1076,7 @@ public sealed class SolarSystemWindow : GameWindow
         if (!_seekActive && !_searchActive)
         {
             string? tip = null;
-            if (_hoverIndex == -1) tip = "Sun";
+            if (_hoverIndex == -1) tip = Localization.T("ui.tooltip.sun");
             else
             {
                 var hb = GetBody(_hoverIndex);
@@ -1001,17 +1097,39 @@ public sealed class SolarSystemWindow : GameWindow
         // Q7: HUD overlay (FPS + particle counts + scale mode). Top-right corner.
         if (_showHud)
         {
-            string scale = OrbitalMechanics.RealScale ? "real" : "compressed";
+            string scale = Localization.T(OrbitalMechanics.RealScale ? "ui.scale.real" : "ui.scale.compressed");
             string hud =
-                $"FPS       {_fpsValue:0.}\n" +
-                $"Scale     {scale}\n" +
-                $"Wind      {_solarWind.ActiveCount} / {_solarWind.MaxParticles}\n" +
-                $"Flares    {_solarFlares.ActiveCount} / {_solarFlares.MaxParticles}\n" +
-                $"Comet     {_comet.ActiveCount} / {_comet.MaxParticles}\n" +
-                $"Belt      {_belt.Count}";
+                $"{Localization.T("ui.hud.fps")}       {_fpsValue:0.}\n" +
+                $"{Localization.T("ui.hud.scale")}     {scale}\n" +
+                $"{Localization.T("ui.hud.wind")}      {_solarWind.ActiveCount} / {_solarWind.MaxParticles}\n" +
+                $"{Localization.T("ui.hud.flares")}    {_solarFlares.ActiveCount} / {_solarFlares.MaxParticles}\n" +
+                $"{Localization.T("ui.hud.comet")}     {_comet.ActiveCount} / {_comet.MaxParticles}\n" +
+                $"{Localization.T("ui.hud.belt")}      {_belt.Count}";
             _renderer.DrawText(_font, hud,
                 _renderer.FramebufferSize.X - 220f, 12f, 14f,
                 new Vector4(0.7f, 1f, 0.8f, 0.95f));
+        }
+
+        // Q9: timeline scrubber (drawn behind tooltip / settings overlay) — pass the
+        // bookmark catalogue so the bar can show coloured ticks for each event.
+        _scrubber.Draw(_renderer, _font, _simDays, _bookmarks);
+
+        // Q12: in-app settings overlay. Drawn before the bookmarks sidebar so the
+        // sidebar can stack underneath it via _settings.Bottom.
+        _settings.Draw(_renderer, _font, _mousePos);
+
+        // Q8 / S12: bookmarks sidebar (right-edge panel). When the settings panel
+        // is open we push the sidebar below it; otherwise it sits at y=150.
+        float sidebarTopY = _settings.Visible ? _settings.Bottom + 12f : 150f;
+        _bookSidebar.Draw(_renderer, _font, _bookmarks, _mousePos, _simDays, sidebarTopY);
+
+        // Q10: small "PLAYING…" banner while a camera path is active.
+        if (_camPath.IsPlaying)
+        {
+            _renderer.DrawText(_font, $"▶ {Localization.T("ui.campath.banner")}",
+                _renderer.FramebufferSize.X * 0.5f - 60f,
+                _renderer.FramebufferSize.Y - 60f, 14f,
+                new Vector4(1f, 0.85f, 0.5f, 0.95f));
         }
 
         SwapBuffers();
@@ -1022,6 +1140,25 @@ public sealed class SolarSystemWindow : GameWindow
     {
         base.OnMouseDown(e);
         var pos = new Vector2(MouseState.X, MouseState.Y);
+
+        // Q12: settings panel takes click priority when open.
+        if (e.Button == MouseButton.Left && _settings.TryHandleClick(pos)) return;
+        // Q8 / S12: bookmarks sidebar — filter cycle / row jump.
+        if (e.Button == MouseButton.Left && _bookSidebar.TryHandleClick(pos, _bookmarks, out var jumpTo))
+        {
+            if (jumpTo is { } ev)
+            {
+                _simDays = Bookmarks.ToSimDays(ev);
+                ClearAllTrails();
+                _audio.PlayTick();
+                _seekFeedback = $"{ev.Kind}: {ev.Title} \u2014 {ev.Date:yyyy-MM-dd}";
+                _seekFeedbackUntil = GLFW.GetTime() + 4.0;
+            }
+            return;
+        }
+        // Q9: timeline scrubber begins a drag.
+        if (e.Button == MouseButton.Left && _scrubber.TryBeginDrag(pos)) return;
+
         if (e.Button == MouseButton.Left)
         {
             double now = GLFW.GetTime();
@@ -1058,6 +1195,7 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnMouseUp(MouseButtonEventArgs e)
     {
         base.OnMouseUp(e);
+        if (e.Button == MouseButton.Left) _scrubber.EndDrag();
         _camera.HandleMouseUp(e);
     }
     protected override void OnMouseMove(MouseMoveEventArgs e)
@@ -1191,6 +1329,7 @@ public sealed class SolarSystemWindow : GameWindow
         _focusEndDistance = endDistance;
         _focusTransitionElapsed = 0.0;
         _focusTransitioning = true;
+        _audio.PlayWhoosh();
         // endTarget is consumed implicitly via _focusIndex during the lerp; for the Sun
         // case (_focusIndex = -1) we still need a fixed target, but Vector3.Zero is
         // already the Sun's position so this just works.
@@ -1353,6 +1492,71 @@ public sealed class SolarSystemWindow : GameWindow
     /// <summary>Parse the date-seek buffer and update <see cref="_simDays"/>.
     /// Accepts an absolute date (any format <see cref="DateTime.TryParse(string, out DateTime)"/>
     /// understands) or a signed integer day delta (e.g. "+30", "-365").</summary>
+    /// <summary>Q10: handle Ctrl+1..9 (record) and Ctrl+Shift+1..9 (clear) for
+    /// camera-path waypoints. Returns true when the keystroke was consumed so
+    /// the caller can early-out before the regular digit-focus shortcut runs.</summary>
+    private bool TryHandleCameraPathKey(KeyboardKeyEventArgs e)
+    {
+        int slot = e.Key switch
+        {
+            Keys.D1 or Keys.KeyPad1 => 1,
+            Keys.D2 or Keys.KeyPad2 => 2,
+            Keys.D3 or Keys.KeyPad3 => 3,
+            Keys.D4 or Keys.KeyPad4 => 4,
+            Keys.D5 or Keys.KeyPad5 => 5,
+            Keys.D6 or Keys.KeyPad6 => 6,
+            Keys.D7 or Keys.KeyPad7 => 7,
+            Keys.D8 or Keys.KeyPad8 => 8,
+            Keys.D9 or Keys.KeyPad9 => 9,
+            _ => 0,
+        };
+        if (slot == 0) return false;
+        if ((e.Modifiers & KeyModifiers.Shift) != 0)
+        {
+            _camPath.Clear(slot);
+            _seekFeedback = $"Waypoint {slot} cleared";
+        }
+        else
+        {
+            _camPath.Record(slot, _camera);
+            _audio.PlayTick();
+            _seekFeedback = $"Waypoint {slot} recorded ({_camPath.Count} total)";
+        }
+        _seekFeedbackUntil = GLFW.GetTime() + 2.0;
+        return true;
+    }
+
+    /// <summary>Q12: build the in-app settings rows. Each row is backed by a
+    /// closure over the existing fields so the panel stays consistent with the
+    /// keyboard shortcuts without any extra state plumbing.</summary>
+    private void BuildSettingsPanel()
+    {
+        _settings.Clear();
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Orbits",        Get = () => _showOrbits,        Toggle = () => _showOrbits = !_showOrbits });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Trails",        Get = () => _showTrails,        Toggle = () => { _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Labels",        Get = () => _showLabels,        Toggle = () => _showLabels = !_showLabels });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Axes",          Get = () => _showAxes,          Toggle = () => _showAxes = !_showAxes });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Dwarfs",        Get = () => _showDwarfs,        Toggle = () => _showDwarfs = !_showDwarfs });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Constellations",Get = () => _showConstellations,Toggle = () => { _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Probes",        Get = () => _showProbes,        Toggle = () => _showProbes = !_showProbes });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Lagrange",      Get = () => _showLagrange,      Toggle = () => _showLagrange = !_showLagrange });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Meteors",       Get = () => _showMeteors,       Toggle = () => _showMeteors = !_showMeteors });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Aurora",        Get = () => _showAurora,        Toggle = () => { _showAurora = !_showAurora; _aurora.Enabled = _showAurora; } });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Solar wind",    Get = () => _solarWind.Enabled, Toggle = () => _solarWind.Enabled = !_solarWind.Enabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Solar flares",  Get = () => _solarFlares.Enabled, Toggle = () => _solarFlares.Enabled = !_solarFlares.Enabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Bloom",         Get = () => _renderer.BloomEnabled, Toggle = () => _renderer.BloomEnabled = !_renderer.BloomEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "FXAA",          Get = () => _renderer.FxaaEnabled,  Toggle = () => _renderer.FxaaEnabled = !_renderer.FxaaEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "PBR",           Get = () => _renderer.PbrEnabled,   Toggle = () => _renderer.PbrEnabled = !_renderer.PbrEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Audio",         Get = () => _audio.Enabled,      Toggle = () => _audio.Enabled = !_audio.Enabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "Timeline",      Get = () => _scrubber.Visible,   Toggle = () => _scrubber.Visible = !_scrubber.Visible });
+        _settings.Add(new SettingsPanel.SliderRow {
+            Label  = "Speed (d/s)",
+            Get    = () => (float)_daysPerSecond,
+            Set    = v => _daysPerSecond = v,
+            Min    = -1000f, Max = 1000f, Step = 1f, Format = "{0:0.##}"
+        });
+    }
+
     private void ApplyDateSeek()
     {
         string s = _seekBuffer.Trim();
@@ -1379,6 +1583,7 @@ public sealed class SolarSystemWindow : GameWindow
         if (ok)
         {
             ClearAllTrails();
+            _audio.PlayTick();
             var newDate = OrbitalMechanics.J2000.AddDays(_simDays);
             _seekFeedback = $"Jumped to {newDate:yyyy-MM-dd}";
         }
@@ -1459,9 +1664,8 @@ public sealed class SolarSystemWindow : GameWindow
         _searchBuffer = "";
     }
 
-    // -------- Q4: screenshot -----------------------------------------------------
+    // -------- Q4 / Q11: cross-platform screenshot via SkiaSharp ----------------
 
-    [SupportedOSPlatform("windows")]
     private void SaveScreenshot()
     {
         try
@@ -1470,39 +1674,33 @@ public sealed class SolarSystemWindow : GameWindow
             int h = _renderer.FramebufferSize.Y;
             if (w <= 0 || h <= 0) return;
 
-            // Read from the default framebuffer (post-bloom composite) as BGRA so it
-            // maps directly onto a 32bppArgb GDI+ bitmap with no per-pixel swap.
+            // Read RGBA8 from the default framebuffer (post-bloom composite).
             var pixels = new byte[w * h * 4];
             GL.PixelStore(PixelStoreParameter.PackAlignment, 1);
             GL.ReadBuffer(ReadBufferMode.Back);
-            GL.ReadPixels(0, 0, w, h, PixelFormat.Bgra, PixelType.UnsignedByte, pixels);
+            GL.ReadPixels(0, 0, w, h, PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
+
+            // OpenGL origin is bottom-left, image formats are top-left → flip rows.
+            var flipped = new byte[pixels.Length];
+            int stride = w * 4;
+            for (int y = 0; y < h; y++)
+                System.Buffer.BlockCopy(pixels, (h - 1 - y) * stride, flipped, y * stride, stride);
 
             Directory.CreateDirectory("screenshots");
             string path = Path.Combine("screenshots", $"screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png");
 
-            using (var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
-            {
-                var rect = new System.Drawing.Rectangle(0, 0, w, h);
-                var data = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, bmp.PixelFormat);
-                int stride = data.Stride;
-                // OpenGL origin is bottom-left, GDI+ is top-left → copy rows in reverse.
-                unsafe
-                {
-                    byte* dst = (byte*)data.Scan0;
-                    fixed (byte* srcBase = pixels)
-                    {
-                        for (int y = 0; y < h; y++)
-                        {
-                            byte* src = srcBase + (h - 1 - y) * w * 4;
-                            byte* d = dst + y * stride;
-                            System.Buffer.MemoryCopy(src, d, stride, w * 4);
-                        }
-                    }
-                }
-                bmp.UnlockBits(data);
-                bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-            }
+            // Q11: SkiaSharp encodes RGBA8888 directly — works on Windows, Linux and macOS
+            // (SkiaSharp.NativeAssets.Linux.NoDependencies ships the Linux native).
+            var info = new SkiaSharp.SKImageInfo(w, h,
+                SkiaSharp.SKColorType.Rgba8888, SkiaSharp.SKAlphaType.Premul);
+            using var bmp = new SkiaSharp.SKBitmap(info);
+            System.Runtime.InteropServices.Marshal.Copy(flipped, 0, bmp.GetPixels(), flipped.Length);
+            using var img = SkiaSharp.SKImage.FromBitmap(bmp);
+            using var data = img.Encode(SkiaSharp.SKEncodedImageFormat.Png, 95);
+            using var fs = File.OpenWrite(path);
+            data.SaveTo(fs);
 
+            _audio.PlayTick();
             _seekFeedback = $"Saved {path}";
             _seekFeedbackUntil = GLFW.GetTime() + 3.0;
             Debug.WriteLine($"[screenshot] {path}");
@@ -1555,6 +1753,13 @@ public sealed class SolarSystemWindow : GameWindow
         public bool ShowAurora { get; set; } = true;
         public bool PbrEnabled { get; set; } = true;
         public bool OceanMaskEnabled { get; set; } = true;
+        // Q9 / Q12 / Q14 / Q15 / Q13 / Q8.
+        public bool ScrubberVisible { get; set; }
+        public bool SettingsVisible { get; set; }
+        public bool BookmarksVisible { get; set; }
+        public int  HelpMode { get; set; }
+        public bool AudioEnabled { get; set; }
+        public string Language { get; set; } = "en";
     }
 
     private void TryLoadPersistedState()
@@ -1606,6 +1811,13 @@ public sealed class SolarSystemWindow : GameWindow
             _showAurora = s.ShowAurora;
             _aurora.Enabled = _showAurora;
 
+            _scrubber.Visible = s.ScrubberVisible;
+            _settings.Visible = s.SettingsVisible;
+            _bookSidebar.Visible = s.BookmarksVisible;
+            _helpMode = Math.Clamp(s.HelpMode, 0, 2);
+            _audio.Enabled = s.AudioEnabled;
+            if (!string.IsNullOrEmpty(s.Language)) Localization.SetLanguage(s.Language);
+
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
         catch (Exception ex)
@@ -1653,6 +1865,12 @@ public sealed class SolarSystemWindow : GameWindow
                 ShowAurora = _showAurora,
                 PbrEnabled = _renderer.PbrEnabled,
                 OceanMaskEnabled = _renderer.OceanMaskEnabled,
+                ScrubberVisible = _scrubber.Visible,
+                SettingsVisible = _settings.Visible,
+                BookmarksVisible = _bookSidebar.Visible,
+                HelpMode = _helpMode,
+                AudioEnabled = _audio.Enabled,
+                Language = Localization.CurrentLanguage,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

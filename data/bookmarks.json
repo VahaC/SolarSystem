@@ -1,0 +1,82 @@
+// Q8 / S12 bookmark catalogue. Schema: { title, date (UTC), kind, tags?, where? }.
+// Kinds: Eclipse / Transit / Comet / Opposition / Conjunction / Mission /
+// Discovery / Anniversary / Other. Spans roughly J2000 +/- 100 years.
+[
+  // ---- Discoveries ----
+  { "title": "Pluto discovered (Tombaugh)",         "date": "1930-02-18", "kind": "Discovery",   "tags": "pluto" },
+  { "title": "Sedna discovered",                     "date": "2003-11-14", "kind": "Discovery",   "tags": "sedna" },
+  { "title": "Eris discovered",                      "date": "2005-01-05", "kind": "Discovery",   "tags": "eris" },
+  { "title": "Makemake discovered",                  "date": "2005-03-31", "kind": "Discovery",   "tags": "makemake" },
+  { "title": "Haumea discovered",                    "date": "2004-12-28", "kind": "Discovery",   "tags": "haumea" },
+
+  // ---- Solar eclipses (total/annular highlights) ----
+  { "title": "Total solar eclipse (Europe)",         "date": "1927-06-29", "kind": "Eclipse", "tags": "solar,total", "where": "GB/SE" },
+  { "title": "Total solar eclipse (Africa)",         "date": "1973-06-30", "kind": "Eclipse", "tags": "solar,total", "where": "AF" },
+  { "title": "Total solar eclipse (Mexico)",         "date": "1991-07-11", "kind": "Eclipse", "tags": "solar,total", "where": "MX/HI" },
+  { "title": "Total solar eclipse",                  "date": "1999-08-11", "kind": "Eclipse", "tags": "solar,total", "where": "EU/ME" },
+  { "title": "Annular solar eclipse",                "date": "2012-05-20", "kind": "Eclipse", "tags": "solar,annular", "where": "Pacific/US" },
+  { "title": "Total solar eclipse (US)",             "date": "2017-08-21", "kind": "Eclipse", "tags": "solar,total", "where": "USA" },
+  { "title": "Annular solar eclipse",                "date": "2023-10-14", "kind": "Eclipse", "tags": "solar,annular", "where": "US/CA/SA" },
+  { "title": "Total solar eclipse (NA)",             "date": "2024-04-08", "kind": "Eclipse", "tags": "solar,total", "where": "MX/US/CA" },
+  { "title": "Total solar eclipse",                  "date": "2026-08-12", "kind": "Eclipse", "tags": "solar,total", "where": "GL/IS/ES" },
+  { "title": "Total solar eclipse (long)",           "date": "2027-08-02", "kind": "Eclipse", "tags": "solar,total", "where": "ES/EG/SA" },
+  { "title": "Total solar eclipse (Australia)",      "date": "2028-07-22", "kind": "Eclipse", "tags": "solar,total", "where": "AU/NZ" },
+  { "title": "Total solar eclipse",                  "date": "2034-03-20", "kind": "Eclipse", "tags": "solar,total", "where": "AF/AS" },
+  { "title": "Total solar eclipse",                  "date": "2045-08-12", "kind": "Eclipse", "tags": "solar,total", "where": "USA/SA" },
+  { "title": "Total solar eclipse",                  "date": "2061-04-20", "kind": "Eclipse", "tags": "solar,total", "where": "EU" },
+  { "title": "Total solar eclipse",                  "date": "2078-05-11", "kind": "Eclipse", "tags": "solar,total", "where": "AS" },
+  { "title": "Total solar eclipse",                  "date": "2099-09-14", "kind": "Eclipse", "tags": "solar,total", "where": "US/EU" },
+
+  // ---- Lunar eclipses (selected) ----
+  { "title": "Total lunar eclipse",                  "date": "2018-07-27", "kind": "Eclipse", "tags": "lunar,total" },
+  { "title": "Total lunar eclipse (super blood)",    "date": "2022-11-08", "kind": "Eclipse", "tags": "lunar,total" },
+  { "title": "Total lunar eclipse",                  "date": "2025-03-14", "kind": "Eclipse", "tags": "lunar,total" },
+  { "title": "Total lunar eclipse",                  "date": "2026-03-03", "kind": "Eclipse", "tags": "lunar,total" },
+
+  // ---- Planetary transits ----
+  { "title": "Mercury transit",                      "date": "1999-11-15", "kind": "Transit", "tags": "mercury" },
+  { "title": "Venus transit",                        "date": "2004-06-08", "kind": "Transit", "tags": "venus" },
+  { "title": "Mercury transit",                      "date": "2006-11-08", "kind": "Transit", "tags": "mercury" },
+  { "title": "Venus transit (last until 2117)",      "date": "2012-06-06", "kind": "Transit", "tags": "venus" },
+  { "title": "Mercury transit",                      "date": "2016-05-09", "kind": "Transit", "tags": "mercury" },
+  { "title": "Mercury transit",                      "date": "2019-11-11", "kind": "Transit", "tags": "mercury" },
+  { "title": "Mercury transit",                      "date": "2032-11-13", "kind": "Transit", "tags": "mercury" },
+  { "title": "Mercury transit",                      "date": "2049-05-07", "kind": "Transit", "tags": "mercury" },
+  { "title": "Venus transit",                        "date": "2117-12-11", "kind": "Transit", "tags": "venus" },
+  { "title": "Venus transit",                        "date": "2125-12-08", "kind": "Transit", "tags": "venus" },
+
+  // ---- Comets ----
+  { "title": "Halley perihelion",                    "date": "1986-02-09", "kind": "Comet", "tags": "halley" },
+  { "title": "Hale-Bopp perihelion",                 "date": "1997-04-01", "kind": "Comet", "tags": "hale-bopp" },
+  { "title": "McNaught (Great Comet)",               "date": "2007-01-12", "kind": "Comet", "tags": "mcnaught" },
+  { "title": "Comet NEOWISE perihelion",             "date": "2020-07-03", "kind": "Comet", "tags": "neowise" },
+  { "title": "Tsuchinshan-ATLAS perihelion",         "date": "2024-09-27", "kind": "Comet", "tags": "atlas" },
+  { "title": "Halley perihelion (next)",             "date": "2061-07-28", "kind": "Comet", "tags": "halley" },
+
+  // ---- Oppositions / conjunctions ----
+  { "title": "Mars closest opposition",              "date": "2003-08-28", "kind": "Opposition", "tags": "mars" },
+  { "title": "Jupiter opposition",                   "date": "2010-09-21", "kind": "Opposition", "tags": "jupiter" },
+  { "title": "Mars opposition",                      "date": "2018-07-27", "kind": "Opposition", "tags": "mars" },
+  { "title": "Jupiter closest opposition",           "date": "2022-09-26", "kind": "Opposition", "tags": "jupiter" },
+  { "title": "Great Conjunction (Jup-Sat)",          "date": "2020-12-21", "kind": "Conjunction", "tags": "jupiter,saturn" },
+  { "title": "Mars opposition",                      "date": "2025-01-16", "kind": "Opposition", "tags": "mars" },
+
+  // ---- Missions ----
+  { "title": "Sputnik 1 launch",                     "date": "1957-10-04", "kind": "Mission", "tags": "sputnik" },
+  { "title": "Apollo 11 Moon landing",               "date": "1969-07-20", "kind": "Mission", "tags": "apollo" },
+  { "title": "Voyager 2 launch",                     "date": "1977-08-20", "kind": "Mission", "tags": "voyager" },
+  { "title": "Voyager 1 launch",                     "date": "1977-09-05", "kind": "Mission", "tags": "voyager" },
+  { "title": "Cassini Saturn arrival",               "date": "2004-07-01", "kind": "Mission", "tags": "cassini" },
+  { "title": "New Horizons Pluto flyby",             "date": "2015-07-14", "kind": "Mission", "tags": "new-horizons" },
+  { "title": "Cassini Grand Finale",                 "date": "2017-09-15", "kind": "Mission", "tags": "cassini" },
+  { "title": "Parker Solar Probe launch",            "date": "2018-08-12", "kind": "Mission", "tags": "parker" },
+  { "title": "JWST launch",                          "date": "2021-12-25", "kind": "Mission", "tags": "jwst" },
+  { "title": "DART asteroid impact",                 "date": "2022-09-26", "kind": "Mission", "tags": "dart" },
+  { "title": "Europa Clipper launch",                "date": "2024-10-14", "kind": "Mission", "tags": "europa-clipper" },
+
+  // ---- Anniversaries / epochs ----
+  { "title": "J2000.0 epoch",                        "date": "2000-01-01", "kind": "Anniversary", "tags": "epoch" },
+  { "title": "B1950.0 epoch",                        "date": "1950-01-01", "kind": "Anniversary", "tags": "epoch" },
+  { "title": "J2050.0 epoch",                        "date": "2050-01-01", "kind": "Anniversary", "tags": "epoch" },
+  { "title": "J2100.0 epoch",                        "date": "2100-01-01", "kind": "Anniversary", "tags": "epoch" }
+]

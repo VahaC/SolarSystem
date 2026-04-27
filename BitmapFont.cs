@@ -45,7 +45,7 @@ public sealed class BitmapFont : IDisposable
     private readonly Dictionary<char, Glyph> _glyphs;
     private readonly Glyph _fallback;
 
-    public BitmapFont(string fontFamily = "Segoe UI", float fontPixelSize = 32f, int atlasW = 1024, int atlasH = 512)
+    public BitmapFont(string fontFamily = "Segoe UI", float fontPixelSize = 32f, int atlasW = 1024, int atlasH = 1024)
     {
         FontPixelSize = fontPixelSize;
         AtlasW = atlasW;
@@ -63,6 +63,13 @@ public sealed class BitmapFont : IDisposable
             SKTypeface.FromFamilyName("DejaVu Sans") ??
             SKTypeface.FromFamilyName("Arial") ??
             SKTypeface.Default;
+
+        // Cache fallback typefaces (one per codepoint via SKFontManager.MatchCharacter)
+        // so that scripts not present in the primary typeface (e.g. Cyrillic when the
+        // resolved family is Latin-only) still render with real glyphs instead of '?'.
+        var fontManager = SKFontManager.Default;
+        var fallbackFonts = new Dictionary<string, SKFont>(StringComparer.Ordinal);
+        var fallbackTypefaces = new List<SKTypeface>();
 
         using (typeface)
         using (var font = new SKFont(typeface, fontPixelSize) { Edging = SKFontEdging.SubpixelAntialias, Hinting = SKFontHinting.Normal })
@@ -90,17 +97,97 @@ public sealed class BitmapFont : IDisposable
             // Simple shelf packer.
             int curX = 1, curY = 1, rowH = 0;
 
-            for (int code = 32; code < 127; code++)
+            // Bake printable ASCII (32..126), Latin-1 supplement (160..255), the
+            // full Cyrillic block (U+0400..U+04FF), General Punctuation
+            // (U+2000..U+206F — em/en dash, ellipsis, smart quotes), Arrows
+            // (U+2190..U+21FF), Geometric Shapes (U+25A0..U+25FF — ▶ ◀ █ ░) and
+            // Miscellaneous Symbols (U+2600..U+26FF — ☄ ☀ etc.) so localized HUD
+            // strings render real glyphs instead of falling back to '?'.
+            var codepoints = new List<int>(1024);
+            for (int c = 32; c < 127; c++) codepoints.Add(c);
+            for (int c = 160; c < 256; c++) codepoints.Add(c);
+            for (int c = 0x0400; c <= 0x04FF; c++) codepoints.Add(c);
+            for (int c = 0x2000; c <= 0x206F; c++) codepoints.Add(c);
+            for (int c = 0x2190; c <= 0x21FF; c++) codepoints.Add(c);
+            for (int c = 0x2580; c <= 0x259F; c++) codepoints.Add(c);
+            for (int c = 0x25A0; c <= 0x25FF; c++) codepoints.Add(c);
+            for (int c = 0x2600; c <= 0x26FF; c++) codepoints.Add(c);
+
+            foreach (int code in codepoints)
             {
+                if (code > char.MaxValue) continue;
                 char ch = (char)code;
                 string s = ch.ToString();
 
+                // If the primary typeface has no glyph for this codepoint, ask
+                // SKFontManager for a system fallback that does (e.g. Segoe UI
+                // Symbol / Noto / DejaVu). Skipped glyphs would otherwise render
+                // as '?' even if a localized translation supplies the codepoint.
+                SKPaint drawPaint = paint;
+                SKFont? fallbackFont = null;
+                if (typeface.GetGlyph(code) == 0)
+                {
+                    var fbTypeface = fontManager.MatchCharacter(code);
+                    if (fbTypeface != null)
+                    {
+                        string fbKey = fbTypeface.FamilyName ?? "?";
+                        if (!fallbackFonts.TryGetValue(fbKey, out fallbackFont))
+                        {
+                            fallbackTypefaces.Add(fbTypeface);
+                            fallbackFont = new SKFont(fbTypeface, fontPixelSize)
+                            {
+                                Edging = SKFontEdging.SubpixelAntialias,
+                                Hinting = SKFontHinting.Normal
+                            };
+                            fallbackFonts[fbKey] = fallbackFont;
+                        }
+                        else
+                        {
+                            fbTypeface.Dispose();
+                        }
+                    }
+                    else
+                    {
+                        // No system glyph at all — leave dictionary empty (GetGlyph → '?').
+                        continue;
+                    }
+                }
+
                 // SKPaint.MeasureText(string) is the cross-version-stable string overload.
-                float advance = paint.MeasureText(s);
+                float advance;
+                if (fallbackFont != null)
+                {
+                    using var fbMeasurePaint = new SKPaint
+                    {
+                        IsAntialias = true,
+                        Color = SKColors.White,
+                        Typeface = fallbackFont.Typeface,
+                        TextSize = fontPixelSize
+                    };
+                    advance = fbMeasurePaint.MeasureText(s);
+                }
+                else
+                {
+                    advance = paint.MeasureText(s);
+                }
                 if (advance <= 0) advance = fontPixelSize * 0.5f;
 
                 scratchCanvas.Clear(SKColors.Transparent);
-                scratchCanvas.DrawText(s, penX, penY, paint);
+                if (fallbackFont != null)
+                {
+                    using var fbPaint = new SKPaint
+                    {
+                        IsAntialias = true,
+                        Color = SKColors.White,
+                        Typeface = fallbackFont.Typeface,
+                        TextSize = fontPixelSize
+                    };
+                    scratchCanvas.DrawText(s, penX, penY, fbPaint);
+                }
+                else
+                {
+                    scratchCanvas.DrawText(s, penX, penY, drawPaint);
+                }
 
                 if (!FindAlphaBounds(scratch, out int minX, out int minY, out int maxX, out int maxY))
                 {
@@ -157,9 +244,23 @@ public sealed class BitmapFont : IDisposable
             : _glyphs.TryGetValue(' ', out var sp)
                 ? sp
                 : new Glyph(Vector4.Zero, Vector2.Zero, Vector2.Zero, FontPixelSize * 0.5f);
+
+        foreach (var f in fallbackFonts.Values) f.Dispose();
+        foreach (var t in fallbackTypefaces) t.Dispose();
     }
 
     public Glyph GetGlyph(char c) => _glyphs.TryGetValue(c, out var g) ? g : _fallback;
+
+    /// <summary>Measure the rendered pixel width of <paramref name="text"/> at the
+    /// given pixel size (single-line; '\n' is treated as a regular missing glyph).</summary>
+    public float MeasureWidth(string text, float pixelSize)
+    {
+        if (string.IsNullOrEmpty(text)) return 0f;
+        float scale = pixelSize / FontPixelSize;
+        float w = 0f;
+        foreach (char ch in text) w += GetGlyph(ch).Advance;
+        return w * scale;
+    }
 
     private static unsafe bool FindAlphaBounds(SKBitmap bmp, out int minX, out int minY, out int maxX, out int maxY)
     {

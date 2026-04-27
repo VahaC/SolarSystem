@@ -27,6 +27,7 @@
     <None Include="textures\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('textures')" />
     <None Include="data\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('data')" />
     <None Include="Resources\Shaders\**\*.glsl" CopyToOutputDirectory="PreserveNewest" />
+    <None Include=".github\copilot-instructions.md" />
     <None Include="solar-system-logo.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('solar-system-logo.png')" />
   </ItemGroup>
 
