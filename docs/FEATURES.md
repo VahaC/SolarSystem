@@ -262,6 +262,7 @@ See [Top-tier → Smooth focus transitions](#smooth-focus-transitions--planet-tr
 ### Q12 — In-app settings panel
 - **Key:** `F1` toggles. Hand-rolled "ImGui-lite" overlay drawn through `Renderer.DrawText` — no new GL state. 17 toggle rows + speed slider, all backed by closures over the same fields the keyboard shortcuts touch so the two stay in sync.
 - **Mouse:** clicks hit-test against per-row bounding boxes and consume LMB so the camera doesn't yank.
+- **Adaptive height:** the panel is clamped to the viewport, and when the rows don't fit the user can mouse-wheel over the panel to scroll. Off-screen rows have their hit-boxes zeroed out so a click at the same screen Y can't toggle a hidden row.
 
 ### Q13 — Localisation
 - **What:** `Localization.T(key)` over a flat `Dictionary<string,string>`. Built-in English defaults in code; runtime languages from `data/lang.<code>.json` (e.g. `lang.uk.json`). System culture auto-applied at startup if a matching file ships.
@@ -272,6 +273,8 @@ See [Top-tier → Smooth focus transitions](#smooth-focus-transitions--planet-tr
   - `0` — full Controls panel + bottom-left info.
   - `1` — just date + speed at the top.
   - `2` — everything hidden.
+- **Adaptive layout:** the Controls cheat sheet now flows into as many columns as it needs to fit the viewport, then shrinks the font (down to 8 px) if it's still too tall. On a 1280×720 monitor the full ~50-line list still fits without overflowing.
+- **Discovery hint:** in mode `1` a dim line under the speed reads `Tab — help · F1 — settings · F3 — bookmarks · Ctrl+F — search`, so users can still find the menus while the cheat sheet is collapsed.
 - **Persistence:** in `state.json`.
 
 ### Q15 — Mute / SFX

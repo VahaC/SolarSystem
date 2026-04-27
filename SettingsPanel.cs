@@ -95,6 +95,51 @@ public sealed class SettingsPanel
 
     private bool _panelHit;
 
+    /// <summary>Vertical scroll offset (in pixels) applied to the row list when
+    /// the panel content is taller than the viewport. Mouse-wheel events
+    /// forwarded via <see cref="HandleScroll"/> nudge this value.</summary>
+    private float _scroll;
+
+    /// <summary>Total content height computed during the last <see cref="Draw"/>
+    /// call. Used to clamp <see cref="_scroll"/>.</summary>
+    private float _contentH;
+
+    /// <summary>Visible rectangle of the scroll viewport (panel rect minus the
+    /// title bar). Stored so <see cref="HandleScroll"/> only consumes wheel
+    /// events when the cursor is actually over the panel.</summary>
+    private Box _viewport;
+
+    /// <summary>Forward a mouse-wheel delta to the panel. Returns <c>true</c>
+    /// when the cursor is over the panel and the event should be treated as
+    /// consumed (so it doesn't also zoom the camera).</summary>
+    public bool HandleScroll(Vector2 mouse, float offsetY)
+    {
+        if (!Visible) return false;
+        if (!_viewport.Contains(mouse)) return false;
+        // 22 px per "click" matches the row height so each wheel notch advances
+        // exactly one toggle row.
+        _scroll = MathF.Max(0f, MathF.Min(_contentH - _viewport.H, _scroll - offsetY * 22f));
+        if (_scroll < 0f) _scroll = 0f;
+        return true;
+    }
+
+    // --- Test hooks -------------------------------------------------------
+    // Exposed as `internal` (paired with [InternalsVisibleTo("SolarSystem.Tests")]
+    // in the main csproj) so unit tests can verify the scroll-clamp and
+    // hit-test invariants without spinning up an OpenGL context.
+    internal float ScrollOffsetForTests => _scroll;
+    internal float ContentHeightForTests => _contentH;
+    internal Box ViewportForTests => _viewport;
+    internal IReadOnlyList<Row> RowsForTests => _rows;
+    /// <summary>Seed the scroll viewport / content-height state that
+    /// <see cref="Draw"/> normally computes, so the click and scroll logic can
+    /// be exercised in tests without a renderer.</summary>
+    internal void SeedForTests(float contentH, Box viewport)
+    {
+        _contentH = contentH;
+        _viewport = viewport;
+    }
+
     /// <summary>Bottom Y of the panel rectangle in screen pixels, valid after
     /// <see cref="Draw"/> runs. Used by <see cref="BookmarksSidebar"/> to stack
     /// itself underneath this panel when both are open.</summary>
@@ -116,7 +161,21 @@ public sealed class SettingsPanel
         // occupies roughly y = 12..120 when visible.
         float panelY = 150f;
         float panelW = 340f;
-        float panelH = pad * 2 + 24f + _rows.Count * lineH;
+        float titleH = 24f;
+        float contentH = _rows.Count * lineH;
+        // Clamp the panel to the viewport so the bottom rows can't fall off the
+        // screen on small monitors. When the rows don't fit, the user can
+        // mouse-wheel to scroll through them (see HandleScroll).
+        float maxPanelH = MathF.Max(120f, renderer.FramebufferSize.Y - panelY - 16f);
+        float panelH = MathF.Min(pad * 2 + titleH + contentH, maxPanelH);
+        float viewportH = panelH - pad * 2 - titleH;
+        _contentH = contentH;
+        _viewport = new Box(panelX, panelY + pad + titleH, panelW, viewportH);
+        // Clamp scroll in case rows count, viewport size or font changed since
+        // the last frame.
+        float maxScroll = MathF.Max(0f, contentH - viewportH);
+        if (_scroll > maxScroll) _scroll = maxScroll;
+        if (_scroll < 0f) _scroll = 0f;
         Bottom = panelY + panelH;
 
         _panelHit = mouse.X >= panelX && mouse.X <= panelX + panelW
@@ -129,10 +188,32 @@ public sealed class SettingsPanel
         renderer.DrawText(font, Localization.T("ui.settings.title"),
             panelX, panelY + pad, 13f, titleColor);
 
-        float y = panelY + pad + 22f;
+        // First row baseline matches the original layout (panelY + pad + 22)
+        // shifted up by the scroll offset.
+        float firstY = panelY + pad + 22f - _scroll;
+        float viewTop = panelY + pad + titleH;
+        float viewBottom = viewTop + viewportH;
+        float y = firstY;
         foreach (var row in _rows)
         {
-            row.Bounds = new Box(panelX + pad, y - textTopOffset, panelW - pad * 2f, lineH);
+            // Off-screen rows are completely skipped — no glyph generation, no
+            // hit-box, so a click at that screen location can't accidentally
+            // toggle a hidden row.
+            float rowTop = y - textTopOffset;
+            float rowBot = rowTop + lineH;
+            if (rowBot < viewTop || rowTop > viewBottom)
+            {
+                row.Bounds = new Box(0, -1, 0, 0);
+                if (row is SliderRow sk)
+                {
+                    sk.Minus = new Box(0, -1, 0, 0);
+                    sk.Plus = new Box(0, -1, 0, 0);
+                    sk.Track = new Box(0, -1, 0, 0);
+                }
+                y += lineH;
+                continue;
+            }
+            row.Bounds = new Box(panelX + pad, rowTop, panelW - pad * 2f, lineH);
             string text;
             // Resolve the label key on every draw so language toggles take effect immediately.
             string label = Localization.T(row.Label);

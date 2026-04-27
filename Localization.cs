@@ -27,6 +27,10 @@ public static class Localization
         ["ui.scale.compressed"]= "compressed",
         ["ui.click.body"]      = "Click a body for info\nDouble-click to focus\nDouble-click empty to unfocus",
         ["ui.help.title"]      = "Controls",
+        // Persistent discovery hint shown below the date/speed line when the
+        // full cheat sheet is collapsed (Tab cycle), so first-time users on a
+        // small monitor still know how to reach every menu.
+        ["ui.help.hint"]       = "Tab — help · F1 — settings · F3 — bookmarks · Ctrl+F — search",
         ["ui.audio.on"]        = "Audio: ON",
         ["ui.audio.off"]       = "Audio: OFF",
         ["ui.lang.toggled"]    = "Language: {0}",

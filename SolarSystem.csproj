@@ -11,6 +11,15 @@
     <AssemblyName>SolarSystem</AssemblyName>
   </PropertyGroup>
 
+  <!-- The test project lives in a sibling folder under the same root, so the
+       SDK's default '**/*.cs' glob would otherwise pull test sources into the
+       main assembly (and fail because xUnit isn't referenced here). -->
+  <ItemGroup>
+    <Compile Remove="SolarSystem.Tests\**" />
+    <None Remove="SolarSystem.Tests\**" />
+    <EmbeddedResource Remove="SolarSystem.Tests\**" />
+  </ItemGroup>
+
   <PropertyGroup Condition="Exists('solar-system-logo.ico')">
     <ApplicationIcon>solar-system-logo.ico</ApplicationIcon>
   </PropertyGroup>
@@ -24,11 +33,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SolarSystem.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="textures\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('textures')" />
     <None Include="data\**\*.*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('data')" />
     <None Include="Resources\Shaders\**\*.glsl" CopyToOutputDirectory="PreserveNewest" />
     <None Include=".github\copilot-instructions.md" />
     <None Include="solar-system-logo.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('solar-system-logo.png')" />
+    <None Include="SolarSystem.Tests\SolarSystem.Tests.csproj" />
   </ItemGroup>
 
 </Project>

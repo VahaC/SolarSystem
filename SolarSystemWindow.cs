@@ -1159,12 +1159,74 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Top-left help panel listing every available control. Body comes from
         // Localization so the entire list translates with F2; the heading uses
-        // the same `ui.help.title` key as the rest of the UI.
+        // the same `ui.help.title` key as the rest of the UI. The list is laid
+        // out in as many columns as needed so it always fits the current
+        // viewport (small monitors get more columns / a smaller font instead of
+        // overflowing off-screen).
         var dim = new Vector4(0.85f, 0.9f, 1f, 0.85f);
         if (_helpMode == 0)
         {
-            string help = Localization.T("ui.help.title") + "\n" + Localization.T("ui.help.body");
-            _renderer.DrawText(_font, help, 12, 78, 13, dim);
+            string body = Localization.T("ui.help.body");
+            string[] lines = body.Split('\n');
+
+            const float topY = 78f;
+            float bottomMargin = _scrubber.Visible ? 64f : 16f;
+            float maxH = MathF.Max(120f, _renderer.FramebufferSize.Y - topY - bottomMargin);
+            float maxW = MathF.Max(360f, _renderer.FramebufferSize.X - 24f);
+
+            float pixelSize = 13f;
+            float LineH(float ps) => _font.LineHeight * (ps / _font.FontPixelSize);
+
+            // Pick the smallest column count that fits vertically.
+            int cols = 1;
+            int rowsPerCol = lines.Length;
+            while (rowsPerCol * LineH(pixelSize) > maxH && cols < 6)
+            {
+                cols++;
+                rowsPerCol = (lines.Length + cols - 1) / cols;
+            }
+            // Still too tall? Shrink the font (lower bound 8 px so glyphs stay legible).
+            if (rowsPerCol * LineH(pixelSize) > maxH)
+            {
+                pixelSize = MathF.Max(8f, pixelSize * maxH / (rowsPerCol * LineH(pixelSize)));
+            }
+
+            // Compute column width from the widest single line, then shrink the
+            // font further if the columns would extend past the viewport edge.
+            float ColWidth(float ps)
+            {
+                float w = 0f;
+                foreach (var ln in lines)
+                {
+                    float lw = _font.MeasureWidth(ln, ps);
+                    if (lw > w) w = lw;
+                }
+                return w + 16f;
+            }
+            float colW = ColWidth(pixelSize);
+            while (cols * colW > maxW && pixelSize > 8f)
+            {
+                pixelSize = MathF.Max(8f, pixelSize - 0.5f);
+                colW = ColWidth(pixelSize);
+            }
+
+            _renderer.DrawText(_font, Localization.T("ui.help.title"), 12f, topY - 4f, 13f, dim);
+            float lh = LineH(pixelSize);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                int c = i / rowsPerCol;
+                int r = i % rowsPerCol;
+                float x = 12f + c * colW;
+                float y = topY + 14f + r * lh;
+                _renderer.DrawText(_font, lines[i], x, y, pixelSize, dim);
+            }
+        }
+        else if (_helpMode == 1)
+        {
+            // Discovery hint so users always know how to reach the menus when
+            // the full cheat sheet is collapsed.
+            _renderer.DrawText(_font, Localization.T("ui.help.hint"),
+                12f, 52f, 12f, new Vector4(0.7f, 0.8f, 1f, 0.75f));
         }
 
         // Info panel (multi-line) for selected body. Hidden in minimal / hidden
@@ -1478,6 +1540,10 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         base.OnMouseWheel(e);
+        // Let the settings panel grab the wheel first so users on small monitors
+        // can scroll through the rows when the panel is taller than the
+        // viewport. Camera zoom only applies when the cursor is outside.
+        if (_settings.HandleScroll(_mousePos, e.OffsetY)) return;
         _camera.HandleScroll(e.OffsetY);
     }
 

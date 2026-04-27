@@ -6,3 +6,6 @@
 /bin/Debug/net10.0
 /obj
 /.github/copilot-instructions.md
+/SolarSystem.Tests/bin/Debug/net10.0
+/SolarSystem.Tests/obj
+/SolarSystem.csproj.Backup.tmp
