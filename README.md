@@ -103,6 +103,7 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 | **F5** | Toggle heliocentric-alignment indicator (S14) |
 | **F6** | Toggle N-body perturbation mode (S15) |
 | **F7** | Toggle GLSL hot-reload (A6) — edits to `Resources/Shaders/*.glsl` live-reload |
+| **F8** | Toggle GPU compute path for the asteroid belt (A8) |
 | **Tab** | Cycle help overlay: full → minimal → hidden (Q14) |
 | **S** | Toggle audio cues (Q15) |
 | **Ctrl + Shift + B** | Step **back** through the eclipse / transit calendar (Q8 / S12) |

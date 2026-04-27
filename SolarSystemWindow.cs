@@ -949,6 +949,22 @@ public sealed class SolarSystemWindow : GameWindow
                 ToggleRecording();
                 break;
 
+            // A8: toggle GPU compute path for the asteroid belt's Kepler solve.
+            case Keys.F8:
+                if (_belt.GpuComputeAvailable)
+                {
+                    _belt.UseGpuCompute = !_belt.UseGpuCompute;
+                    _seekFeedback = Localization.T(_belt.UseGpuCompute
+                        ? "ui.gpubelt.on" : "ui.gpubelt.off");
+                }
+                else
+                {
+                    _seekFeedback = Localization.T("ui.gpubelt.unavailable")
+                        + (string.IsNullOrEmpty(_belt.LastInitError) ? "" : "\n" + _belt.LastInitError);
+                }
+                _seekFeedbackUntil = GLFW.GetTime() + 6.0;
+                break;
+
             case Keys.KeyPadAdd:
             case Keys.Equal:
             {
@@ -1906,6 +1922,7 @@ public sealed class SolarSystemWindow : GameWindow
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.alignment",     Get = () => _showAlignment,    Toggle = () => _showAlignment = !_showAlignment });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.nbody",         Get = () => _nbodyEnabled,     Toggle = () => { _nbodyEnabled = !_nbodyEnabled; if (_nbodyEnabled) _nbodyDirty = true; } });
         _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lensflare",     Get = () => _renderer.LensFlareEnabled, Toggle = () => _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled });
+        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.gpubelt",       Get = () => _belt.UseGpuCompute,        Toggle = () => { if (_belt.GpuComputeAvailable) _belt.UseGpuCompute = !_belt.UseGpuCompute; } });
         _settings.Add(new SettingsPanel.SliderRow {
             Label  = "ui.settings.speed",
             Get    = () => (float)_daysPerSecond,
@@ -2240,6 +2257,8 @@ public sealed class SolarSystemWindow : GameWindow
         public bool NBodyEnabled { get; set; }
         // V6: screen-space lens-flare ghosts along the Sun-through-centre axis.
         public bool LensFlareEnabled { get; set; } = true;
+        // A8: GPU compute path for the asteroid belt's Kepler solve.
+        public bool GpuAsteroidsEnabled { get; set; } = true;
     }
 
     private void TryLoadPersistedState()
@@ -2303,6 +2322,7 @@ public sealed class SolarSystemWindow : GameWindow
             _nbodyEnabled = s.NBodyEnabled;
             if (_nbodyEnabled) _nbodyDirty = true;
             _renderer.LensFlareEnabled = s.LensFlareEnabled;
+            _belt.UseGpuCompute = s.GpuAsteroidsEnabled;
 
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
@@ -2361,6 +2381,7 @@ public sealed class SolarSystemWindow : GameWindow
                 ShowAlignment = _showAlignment,
                 NBodyEnabled = _nbodyEnabled,
                 LensFlareEnabled = _renderer.LensFlareEnabled,
+                GpuAsteroidsEnabled = _belt.UseGpuCompute,
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

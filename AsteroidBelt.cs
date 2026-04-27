@@ -15,6 +15,21 @@ public sealed class AsteroidBelt : IDisposable
     public bool Enabled { get; set; } = true;
     public int Count { get; }
 
+    /// <summary>A8: when true and a compute shader is available, the per-frame
+    /// Kepler solve runs on the GPU and writes straight into the instance VBO
+    /// via SSBO bindings. Falls back automatically if compute compile / link
+    /// fails. Toggle with <c>F8</c>; persisted in <c>state.json</c>.</summary>
+    public bool UseGpuCompute { get; set; } = true;
+
+    /// <summary>True once the compute shader has been loaded successfully.
+    /// When false the GPU path is unavailable regardless of <see cref="UseGpuCompute"/>.</summary>
+    public bool GpuComputeAvailable { get; private set; }
+
+    /// <summary>When <see cref="GpuComputeAvailable"/> is false, holds the
+    /// underlying reason (compile error, missing extension, GL version too
+    /// low, …) so the F8 banner can surface it instead of just "unavailable".</summary>
+    public string? LastInitError { get; private set; }
+
     /// <summary>Per-asteroid Keplerian + precomputed orbital-plane basis (world space).</summary>
     private struct Asteroid
     {
@@ -33,6 +48,14 @@ public sealed class AsteroidBelt : IDisposable
     private InstancedQuadParticles _mesh = null!;
     private ShaderProgram _shader = null!;
     private Vector2 _viewport = new(1280f, 800f);
+
+    // A8: GPU compute path.
+    private ComputeProgram? _compute;
+    private int _elementsSsbo;     // std430 buffer of Asteroid records (3 vec4 each).
+    private const int ElementStrideFloats = 12; // 3 * vec4
+    private const float K_Compressed = 200.0f / 4.6739f;
+    private const float Power_Compressed = 0.45f;
+    private const float AuToWorld_Real = 50.0f;
 
     public AsteroidBelt(int count = 8000, int seed = 1337)
     {
@@ -90,6 +113,56 @@ public sealed class AsteroidBelt : IDisposable
         _mesh = new InstancedQuadParticles(Count);
         _mesh.Initialize();
         _shader = ShaderSources.CreateProgram("particle.vert", "asteroidbelt.frag");
+
+        // A8: try the GPU compute path. Any failure (no GL 4.3, driver bug, etc.)
+        // is non-fatal — the CPU path keeps working.
+        try
+        {
+            // Sanity-check the live GL context: compute shaders need 4.3+.
+            string ver = GL.GetString(StringName.Version) ?? "";
+            GL.GetInteger(GetPName.MajorVersion, out int major);
+            GL.GetInteger(GetPName.MinorVersion, out int minor);
+            System.Diagnostics.Debug.WriteLine($"[asteroidbelt] GL context: {ver} (parsed {major}.{minor})");
+            if (major < 4 || (major == 4 && minor < 3))
+                throw new Exception($"OpenGL {major}.{minor} context — compute shaders require 4.3+");
+
+            _compute = new ComputeProgram(ShaderSources.Load("asteroidbelt.compute"));
+            _elementsSsbo = GL.GenBuffer();
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _elementsSsbo);
+
+            float[] elems = new float[Count * ElementStrideFloats];
+            for (int i = 0; i < Count; i++)
+            {
+                ref var a = ref _asteroids[i];
+                int o = i * ElementStrideFloats;
+                // ae_n_m0
+                elems[o + 0] = a.A;
+                elems[o + 1] = a.E;
+                elems[o + 2] = a.N;
+                elems[o + 3] = a.M0;
+                // ax_b: Ax.xyz, brightness
+                elems[o + 4] = a.Ax.X;
+                elems[o + 5] = a.Ax.Y;
+                elems[o + 6] = a.Ax.Z;
+                elems[o + 7] = _packed[i * 4 + 3]; // brightness
+                // by_e: Bx.xyz, EFactor
+                elems[o + 8]  = a.Bx.X;
+                elems[o + 9]  = a.Bx.Y;
+                elems[o + 10] = a.Bx.Z;
+                elems[o + 11] = a.EFactor;
+            }
+            GL.BufferData(BufferTarget.ShaderStorageBuffer,
+                elems.Length * sizeof(float), elems, BufferUsageHint.StaticDraw);
+            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+            GpuComputeAvailable = true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[asteroidbelt] GPU compute unavailable: {ex.Message}");
+            _compute = null;
+            GpuComputeAvailable = false;
+            LastInitError = ex.Message;
+        }
     }
 
     public void SetViewport(Vector2 viewport) => _viewport = viewport;
@@ -98,6 +171,12 @@ public sealed class AsteroidBelt : IDisposable
     /// repack the world positions into the VBO.</summary>
     public void Update(double simDays)
     {
+        if (UseGpuCompute && GpuComputeAvailable && _compute != null)
+        {
+            UpdateGpu(simDays);
+            return;
+        }
+
         for (int i = 0; i < _asteroids.Length; i++)
         {
             ref var a = ref _asteroids[i];
@@ -129,6 +208,31 @@ public sealed class AsteroidBelt : IDisposable
         _mesh.UploadInstances(_packed, Count);
     }
 
+    /// <summary>A8: GPU Kepler-solve. The compute shader writes vec4(pos.xyz, brightness)
+    /// straight into the instance VBO via SSBO bindings, so the rasteriser sees the
+    /// new positions without a CPU round-trip.</summary>
+    private void UpdateGpu(double simDays)
+    {
+        _compute!.Use();
+        _compute.SetFloat("uSimDays", (float)simDays);
+        _compute.SetInt("uCount", Count);
+        _compute.SetInt("uRealScale", OrbitalMechanics.RealScale ? 1 : 0);
+        _compute.SetFloat("uK", K_Compressed);
+        _compute.SetFloat("uPower", Power_Compressed);
+        _compute.SetFloat("uAuToWorld", AuToWorld_Real);
+
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 0, _elementsSsbo);
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 1, _mesh.InstanceVbo);
+
+        int groups = (Count + 63) / 64;
+        GL.DispatchCompute(groups, 1, 1);
+        GL.MemoryBarrier(MemoryBarrierFlags.VertexAttribArrayBarrierBit |
+                         MemoryBarrierFlags.ShaderStorageBarrierBit);
+
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 0, 0);
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 1, 0);
+    }
+
     public void Draw(Camera cam)
     {
         if (!Enabled || Count == 0) return;
@@ -157,5 +261,8 @@ public sealed class AsteroidBelt : IDisposable
     {
         _shader?.Dispose();
         _mesh?.Dispose();
+        _compute?.Dispose();
+        if (_elementsSsbo != 0) GL.DeleteBuffer(_elementsSsbo);
+        _elementsSsbo = 0;
     }
 }

@@ -346,11 +346,21 @@
 - **CLI:** `--render --from YYYY-MM-DD --to YYYY-MM-DD [--dt 1.0] [--frames N] [--fps 60] [--out render] [--ffmpeg path] [--video-out file.mp4] [--real-scale]`.
 - **Поведінка:** `StartVisible = false`, persisted state не чіпається, sim-час фіксований на `From + FrameIndex * dt` (детермінований кадр), частинкам — фіксований `1/Fps` суб-крок, кожен `SwapBuffers` зберігається у `OutDir/frame_NNNNN.png` через `SaveScreenshotTo`. Після останнього кадру викликається ffmpeg: `ffmpeg -y -framerate Fps -i frame_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 out.mp4`, після чого вікно закривається і процес виходить.
 
-### A8 — Compute-shader N-body *(заплановано)*
-- Перенести Kepler-solve астероїдів у compute-шейдер; стеля 8 000 → 100 000+. Вихід прямо в instance VBO.
+### A8 — Compute-shader N-body
+- **Клавіша:** `F8` перемикає GPU-шлях для поясу астероїдів.
+- **Що:** `Resources/Shaders/asteroidbelt.compute.glsl` запускає одну `gl_GlobalInvocationID.x` на астероїд (local size 64), читає Кеплерові елементи зі статичного SSBO (binding 0, 3 × `vec4` на астероїд: `(a, e, n, M0)`, `(Ax.xyz, яскравість)`, `(Bx.xyz, sqrt(1−e²))`), розв’язує рівняння Кеплера тим самим Newton-кроком (6 ітерацій), що й CPU-шлях, і пише `vec4(pos.xyz, brightness)` напряму в instance-VBO через SSBO binding 1. `glMemoryBarrier(VertexAttribArrayBarrier)` синхронізує запис із растеризатором. Без CPU-round-trip на кадр, тож стеля 8 000 → 100 000+ без насичення симуляційного потоку.
+- **Фолбек:** якщо compute-шейдер не компілюється/не лінкується (старі драйвери), `AsteroidBelt.GpuComputeAvailable` стає `false`, і CPU-розв’язувач Кеплера тримає пояс на екрані. Зберігається у `PersistedState.GpuAsteroidsEnabled`; рядок у F1-панелі (`ui.settings.gpubelt`).
 
-### A9 — Юніт-тести `OrbitalMechanics` *(заплановано)*
-- xUnit + GitHub Actions. Перевірка `SolveKepler`, `HeliocentricPosition`, `OrbitWorldScale` проти канонічних J2000-ефемерид.
+### A9 — Юніт-тести `OrbitalMechanics`
+- **Що:** новий `SolarSystem.Tests/OrbitalMechanicsTests.cs` (xUnit). Зафіксовані інваріанти:
+  - `SolveKepler(M, 0)` повертає `M` за модулем 2π для довільних `M ∈ [−π, π]`.
+  - Для `e ∈ {0, 0.05, 0.2, 0.5, 0.7, 0.9, 0.95}` і `M ∈ [0, 2π)` з кроком 0.31 нев’язка `(E − e·sin E) − M` (загорнута у `[−π, π]`) < 1e-9.
+  - `SolveKepler` нормалізує від’ємний вхід у `[0, 2π)`.
+  - `HeliocentricPosition(Earth, 0)` віддає позицію з `r ∈ [a(1−e), a(1+e)] ≈ [0.983, 1.017] AU`, `r ∈ [0.95, 1.05]`, `|y| < 0.01 AU`.
+  - `HeliocentricPosition(Mars, 0)` і `HeliocentricPosition(Mars, 1·period)` різняться < 0.02 AU (замикання за один період на secular-rate шляху).
+  - Для Earth `|y|` < 0.001 AU на кожному квартал-місячному відліку.
+  - `OrbitWorldScale` монотонно спадає у стиснутому режимі для `a ∈ {0.39, 0.72, 1.0, 1.52, 5.20, 9.54, 19.19, 30.07}`, у real-scale всюди дорівнює `AuToWorldRealScale`, а Neptune приземляється у ±5 одиниць від цільових 200 world-units.
+- **Запуск:** `dotnet test SolarSystem.Tests/SolarSystem.Tests.csproj`.
 
 ### A10 — CI smoke-build *(заплановано)*
 - Матриця GitHub Actions `windows-latest` / `ubuntu-latest` / `macos-latest` із `dotnet build -c Release`.
@@ -384,6 +394,7 @@
 | `F5` | Індикатор вирівнювання планет |
 | `F6` | Режим N-тіл |
 | `F7` | Гарячий перевант шейдерів |
+| `F8` | GPU пояс астероїдів (compute-шейдер) |
 | `F1` | Панель налаштувань |
 | `F2` | Перемикання мови |
 | `F12` | Скріншот |

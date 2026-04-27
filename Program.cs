@@ -26,7 +26,12 @@ internal static class Program
         {
             ClientSize = new Vector2i(1280, 800),
             Title = "Solar System (J2000)",
-            APIVersion = new Version(3, 3),
+            // 4.3 is required by the A8 asteroid-belt compute shader. Every
+            // other shader stays at #version 330 core, which is still valid
+            // in a 4.3 core profile, so legacy machines that only support
+            // GL 3.3 fall through to the CPU Kepler path automatically when
+            // the context creation downgrades.
+            APIVersion = new Version(4, 3),
             Profile = ContextProfile.Core,
             Flags = ContextFlags.ForwardCompatible,
             StartVisible = job == null,

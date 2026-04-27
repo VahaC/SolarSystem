@@ -348,11 +348,21 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 - **CLI:** `--render --from YYYY-MM-DD --to YYYY-MM-DD [--dt 1.0] [--frames N] [--fps 60] [--out render] [--ffmpeg path] [--video-out file.mp4] [--real-scale]`.
 - **Behaviour:** `StartVisible = false`, persisted state untouched, sim time pinned to `From + FrameIndex * dt` per frame (deterministic), particle systems use a fixed `1/Fps` sub-step, each `SwapBuffers` is captured to `OutDir/frame_NNNNN.png` via `SaveScreenshotTo`. After the last frame, ffmpeg runs as `ffmpeg -y -framerate Fps -i frame_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 out.mp4` and the window closes so the process exits.
 
-### A8 — Compute-shader N-body *(planned)*
-- Move the asteroid Kepler solve to a compute shader so 8 000 → 100 000+. Output goes straight into the instance VBO.
+### A8 — Compute-shader N-body
+- **Key:** `F8` toggles the GPU compute path on the asteroid belt.
+- **What:** `Resources/Shaders/asteroidbelt.compute.glsl` runs one `gl_GlobalInvocationID.x` per asteroid (local size 64), reads per-body Keplerian elements from a static SSBO (binding 0, 3 × `vec4` per asteroid: `(a, e, n, M0)`, `(Ax.xyz, brightness)`, `(Bx.xyz, sqrt(1−e²))`), solves Kepler with the same 6-iteration Newton step the CPU path uses, and writes `vec4(pos.xyz, brightness)` straight into the instance VBO via SSBO binding 1. `glMemoryBarrier(VertexAttribArrayBarrier)` synchronises with the rasteriser. No CPU round-trip per frame, so the 8 000 cap can grow to 100 000+ without stalling the simulation thread.
+- **Fallback:** if the compute shader fails to compile or link (legacy GL driver), `AsteroidBelt.GpuComputeAvailable` flips to `false` and the original CPU Kepler solver keeps the belt on screen. Persisted via `PersistedState.GpuAsteroidsEnabled`; available as a row in the F1 settings panel (`ui.settings.gpubelt`).
 
-### A9 — `OrbitalMechanics` unit tests *(planned)*
-- xUnit + GitHub Actions. Validate `SolveKepler`, `HeliocentricPosition`, `OrbitWorldScale` against canonical J2000 ephemerides.
+### A9 — `OrbitalMechanics` unit tests
+- **What:** new `SolarSystem.Tests/OrbitalMechanicsTests.cs` (xUnit). Pinned invariants:
+  - `SolveKepler(M, 0)` returns `M` mod 2π for any sample of `M ∈ [−π, π]`.
+  - For every `e ∈ {0, 0.05, 0.2, 0.5, 0.7, 0.9, 0.95}` and `M ∈ [0, 2π)` step 0.31, the residual `(E − e·sin E) − M` (wrapped to `[−π, π]`) is < 1e-9.
+  - `SolveKepler` normalises negative input to `[0, 2π)`.
+  - `HeliocentricPosition(Earth, 0)` returns a position with `r ∈ [a(1−e), a(1+e)] ≈ [0.983, 1.017] AU`, `r ∈ [0.95, 1.05]`, `|y| < 0.01 AU` (Earth has zero ecliptic inclination).
+  - `HeliocentricPosition(Mars, 0)` and `HeliocentricPosition(Mars, 1·period)` differ by < 0.02 AU (one-period closure under the secular-rate path).
+  - Earth's `|y|` stays below 0.001 AU at every quarter-month sample.
+  - `OrbitWorldScale` is monotonically decreasing in compressed mode across `a ∈ {0.39, 0.72, 1.0, 1.52, 5.20, 9.54, 19.19, 30.07}`, equals `AuToWorldRealScale` everywhere in real-scale mode, and lands Neptune within ±5 units of 200 world-units (the calibration target).
+- **Run:** `dotnet test SolarSystem.Tests/SolarSystem.Tests.csproj`.
 
 ### A10 — CI smoke build *(planned)*
 - GitHub Actions matrix: `windows-latest`, `ubuntu-latest`, `macos-latest` running `dotnet build -c Release`.
@@ -386,6 +396,7 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 | `F5` | Planetary-alignment indicator |
 | `F6` | N-body mode |
 | `F7` | GLSL hot-reload |
+| `F8` | GPU asteroid belt (compute shader) |
 | `F1` | Settings panel |
 | `F2` | Cycle language |
 | `F12` | Screenshot |

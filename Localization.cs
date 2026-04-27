@@ -112,6 +112,7 @@ public static class Localization
             "F5          alignment indicator (S14)\n" +
             "F6          N-body mode (S15)\n" +
             "F7          GLSL hot-reload (A6)\n" +
+            "F8          GPU asteroid belt (A8)\n" +
             "F9          start / stop video recording (A7)\n" +
             "Z           toggle lens flare (V6)\n" +
             "Tab         help full / mini / off (Q14)\n" +
@@ -166,6 +167,11 @@ public static class Localization
         ["ui.settings.nbody"]         = "N-body (S15)",
         ["ui.settings.lensflare"]     = "Lens flare",
         ["ui.settings.speed"]         = "Speed (d/s)",
+        // A8: GPU compute path for the asteroid belt (toggle with F8).
+        ["ui.settings.gpubelt"]       = "GPU asteroids (A8)",
+        ["ui.gpubelt.on"]             = "GPU asteroid belt: ON (compute shader)",
+        ["ui.gpubelt.off"]            = "GPU asteroid belt: OFF (CPU Kepler solve)",
+        ["ui.gpubelt.unavailable"]    = "GPU asteroid belt unavailable on this driver",
     };
 
     private static Dictionary<string, string> _active = _en;
