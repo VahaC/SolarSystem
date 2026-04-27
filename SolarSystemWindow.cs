@@ -11,6 +11,27 @@ namespace SolarSystem;
 
 public sealed class SolarSystemWindow : GameWindow
 {
+    /// <summary>A7: when set before <see cref="GameWindow.Run"/>, switches the
+    /// app into a deterministic offline renderer that overrides simulation
+    /// time, writes one PNG per frame to <see cref="HeadlessRenderJob.OutDir"/>
+    /// and closes when finished.</summary>
+    public HeadlessRenderJob? Headless { get; init; }
+
+    // A7 (interactive): F9 toggles in-app frame recording. Each rendered frame
+    // is dumped to recordings/<timestamp>/frame_NNNNN.png; on stop, ffmpeg is
+    // invoked when available on PATH (or via the SOLARSYSTEM_FFMPEG env var).
+    private bool _recording;
+    private string _recordDir = "";
+    private int _recordFrameIndex;
+    private double _recordStartedAt;
+    private const int RecordTargetFps = 60;
+    // A7: PNG encoding + disk I/O are dispatched to background tasks so the
+    // render thread only does the GL readback + row-flip memcpy. A bounded
+    // semaphore caps in-flight encodes so very long recordings don't OOM.
+    private readonly List<Task> _recordEncodeTasks = new();
+    private readonly System.Threading.SemaphoreSlim _recordEncodeGate =
+        new(Math.Max(2, Environment.ProcessorCount - 1));
+
     /// <summary>Effective Sun radius in world units. Tracks the global scale mode:
     /// in compressed mode the Sun is artificially huge (5 units) so it dominates the
     /// scene; in real-scale mode it's derived from its real radius in kilometres.</summary>
@@ -312,6 +333,19 @@ public sealed class SolarSystemWindow : GameWindow
         // Q5: restore persisted UI state.
         // initialised camera / toggles / scale mode.
         TryLoadPersistedState();
+
+        // A7: headless renderer — pin sim time, force optional real-scale,
+        // skip per-frame mouse / scrubber UI. Persisted state is intentionally
+        // loaded first so the user's last toggle set defines the look of the
+        // export; CLI overrides take precedence below.
+        if (Headless != null)
+        {
+            if (Headless.RealScale != OrbitalMechanics.RealScale) ToggleRealScale();
+            _paused = true;          // suppress the args.Time-based _simDays advance
+            _simDays = Headless.FromSimDays;
+            try { Directory.CreateDirectory(Headless.OutDir); } catch { /* surfaces below on save */ }
+            Console.WriteLine($"[render] {Headless.TotalFrames} frames @ dt={Headless.DaysPerFrame} d/frame -> {Headless.OutDir}");
+        }
     }
 
     protected override void OnResize(ResizeEventArgs e)
@@ -331,6 +365,32 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnUpdateFrame(FrameEventArgs args)
     {
         base.OnUpdateFrame(args);
+
+        // A7: in headless mode, simulation time is a pure function of frame
+        // index — bypass the args.Time-based advance entirely so the export
+        // is deterministic regardless of how fast the offscreen loop runs.
+        if (Headless != null)
+        {
+            _simDays = Headless.FromSimDays + Headless.FrameIndex * Headless.DaysPerFrame;
+        }
+
+        // A6: drain any GLSL files that changed on disk and rebuild the affected
+        // programs on the GL thread. No-op when hot-reload is off.
+        if (ShaderSources.HotReloadEnabled)
+        {
+            int n = ShaderSources.PollPendingReloads(
+                onSwap: name =>
+                {
+                    _seekFeedback = Localization.T("ui.hotreload.swap", name);
+                    _seekFeedbackUntil = GLFW.GetTime() + 2.5;
+                },
+                onError: (name, msg) =>
+                {
+                    _seekFeedback = Localization.T("ui.hotreload.error", name, msg);
+                    _seekFeedbackUntil = GLFW.GetTime() + 5.0;
+                });
+            if (n > 0) _audio.PlayTick();
+        }
 
         // Q9: keep the scrubber's bar rectangle in sync with the live viewport
         // before any mouse-down hit-tests it.
@@ -534,6 +594,10 @@ public sealed class SolarSystemWindow : GameWindow
         // streaming and flares keep erupting while the planets are perfectly still.
         // Feed dt=0 (instead of skipping the call) so any internal state stays valid.
         float fxDt = _paused ? 0f : (float)args.Time;
+        // A7: headless mode pins _paused = true so the analytic sim is deterministic,
+        // but the Sun's particle systems would freeze. Feed them the per-frame fixed
+        // dt so each rendered frame still has a full set of in-flight wind/flare sprites.
+        if (Headless != null) fxDt = 1f / Math.Max(1, Headless.Fps);
         _solarWind.Update(fxDt, Vector3.Zero, SunRadius);
         _solarFlares.Update(fxDt, Vector3.Zero, SunRadius);
 
@@ -870,6 +934,19 @@ public sealed class SolarSystemWindow : GameWindow
             // Q4: screenshot to ./screenshots/<timestamp>.png.
             case Keys.F12:
                 SaveScreenshot();
+                break;
+
+            // A6: toggle GLSL hot-reload (FileSystemWatcher on Resources/Shaders).
+            case Keys.F7:
+                ShaderSources.SetHotReload(!ShaderSources.HotReloadEnabled);
+                _seekFeedback = Localization.T(ShaderSources.HotReloadEnabled
+                    ? "ui.hotreload.on" : "ui.hotreload.off");
+                _seekFeedbackUntil = GLFW.GetTime() + 2.5;
+                break;
+
+            // A7 (interactive): F9 starts / stops video recording.
+            case Keys.F9:
+                ToggleRecording();
                 break;
 
             case Keys.KeyPadAdd:
@@ -1261,7 +1338,72 @@ public sealed class SolarSystemWindow : GameWindow
                 new Vector4(1f, 0.85f, 0.5f, 0.95f));
         }
 
+        // A7 (interactive): bright red "● REC mm:ss N frames" banner pinned to
+        // the top-centre while recording is active. Drawn before SwapBuffers so
+        // it ends up baked into the saved frame too — handy as a watermark.
+        if (_recording)
+        {
+            var elapsed = TimeSpan.FromSeconds(GLFW.GetTime() - _recordStartedAt);
+            _renderer.DrawText(_font,
+                Localization.T("ui.record.status", elapsed, _recordFrameIndex),
+                _renderer.FramebufferSize.X * 0.5f - 80f, 8f, 14f,
+                new Vector4(1f, 0.25f, 0.25f, 0.95f));
+        }
+
         SwapBuffers();
+
+        // A7 (interactive): dump every rendered frame while F9-recording is on.
+        // Done after SwapBuffers (back-buffer still holds the just-shown image)
+        // so the saved PNG matches what the user sees. Only the GL readback
+        // happens on the render thread; PNG encode + file write are pushed to
+        // a worker so capture FPS isn't dragged down to single digits.
+        if (_recording)
+        {
+            string path = Path.Combine(_recordDir, $"frame_{_recordFrameIndex:D5}.png");
+            try
+            {
+                if (CaptureBackBufferRgba(out var flipped, out int cw, out int ch))
+                {
+                    _recordFrameIndex++;
+                    _recordEncodeGate.Wait();
+                    _recordEncodeTasks.Add(Task.Run(() =>
+                    {
+                        try { EncodePngFromRgba(flipped, cw, ch, path); }
+                        catch (Exception ex) { Debug.WriteLine($"[record] encode failed: {ex}"); }
+                        finally { _recordEncodeGate.Release(); }
+                    }));
+                }
+            }
+            catch (Exception ex)
+            {
+                _recording = false;
+                _seekFeedback = $"Record failed: {ex.Message}";
+                _seekFeedbackUntil = GLFW.GetTime() + 3.0;
+                Debug.WriteLine($"[record] save failed: {ex}");
+            }
+        }
+
+        // A7: headless render — capture the freshly-presented frame to disk and
+        // step the job. When the last frame writes successfully, optionally
+        // invoke ffmpeg and close the window so the process exits cleanly.
+        if (Headless != null)
+        {
+            string path = Path.Combine(Headless.OutDir, $"frame_{Headless.FrameIndex:D5}.png");
+            SaveScreenshotTo(path);
+            int done = Headless.FrameIndex + 1;
+            if (done % 10 == 0 || done == Headless.TotalFrames)
+            {
+                Console.WriteLine(Localization.T("ui.render.progress",
+                    done, Headless.TotalFrames, 100.0 * done / Math.Max(1, Headless.TotalFrames)));
+            }
+            Headless.FrameIndex = done;
+            if (Headless.FrameIndex >= Headless.TotalFrames)
+            {
+                Console.WriteLine(Localization.T("ui.render.done", Headless.TotalFrames, Headless.OutDir));
+                Headless.TryEncodeVideo();
+                Close();
+            }
+        }
     }
 
     // --- Mouse ---
@@ -1747,7 +1889,9 @@ public sealed class SolarSystemWindow : GameWindow
 
     protected override void OnUnload()
     {
-        TrySavePersistedState();
+        // A7: a headless render run shouldn't clobber the interactive user's
+        // saved camera / toggles.
+        if (Headless == null) TrySavePersistedState();
         _solarWind.Dispose();
         _solarFlares.Dispose();
         _belt.Dispose();
@@ -1821,36 +1965,9 @@ public sealed class SolarSystemWindow : GameWindow
     {
         try
         {
-            int w = _renderer.FramebufferSize.X;
-            int h = _renderer.FramebufferSize.Y;
-            if (w <= 0 || h <= 0) return;
-
-            // Read RGBA8 from the default framebuffer (post-bloom composite).
-            var pixels = new byte[w * h * 4];
-            GL.PixelStore(PixelStoreParameter.PackAlignment, 1);
-            GL.ReadBuffer(ReadBufferMode.Back);
-            GL.ReadPixels(0, 0, w, h, PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
-
-            // OpenGL origin is bottom-left, image formats are top-left → flip rows.
-            var flipped = new byte[pixels.Length];
-            int stride = w * 4;
-            for (int y = 0; y < h; y++)
-                System.Buffer.BlockCopy(pixels, (h - 1 - y) * stride, flipped, y * stride, stride);
-
             Directory.CreateDirectory("screenshots");
             string path = Path.Combine("screenshots", $"screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png");
-
-            // Q11: SkiaSharp encodes RGBA8888 directly — works on Windows, Linux and macOS
-            // (SkiaSharp.NativeAssets.Linux.NoDependencies ships the Linux native).
-            var info = new SkiaSharp.SKImageInfo(w, h,
-                SkiaSharp.SKColorType.Rgba8888, SkiaSharp.SKAlphaType.Premul);
-            using var bmp = new SkiaSharp.SKBitmap(info);
-            System.Runtime.InteropServices.Marshal.Copy(flipped, 0, bmp.GetPixels(), flipped.Length);
-            using var img = SkiaSharp.SKImage.FromBitmap(bmp);
-            using var data = img.Encode(SkiaSharp.SKEncodedImageFormat.Png, 95);
-            using var fs = File.OpenWrite(path);
-            data.SaveTo(fs);
-
+            SaveScreenshotTo(path);
             _audio.PlayTick();
             _seekFeedback = $"Saved {path}";
             _seekFeedbackUntil = GLFW.GetTime() + 3.0;
@@ -1861,6 +1978,146 @@ public sealed class SolarSystemWindow : GameWindow
             _seekFeedback = $"Screenshot failed: {ex.Message}";
             _seekFeedbackUntil = GLFW.GetTime() + 3.0;
             Debug.WriteLine($"[screenshot] failed: {ex}");
+        }
+    }
+
+    /// <summary>A4/A11/A7: read the back-buffer RGBA8 and encode it as a PNG via
+    /// SkiaSharp at <paramref name="path"/>. Used by both the F12 screenshot key
+    /// and the headless render loop. Splits into a sync GL readback + memcpy and
+    /// an encode/disk-write helper so F9 recording can do only the readback on
+    /// the render thread and push encoding to a worker.</summary>
+    internal void SaveScreenshotTo(string path)
+    {
+        if (!CaptureBackBufferRgba(out var flipped, out int w, out int h)) return;
+        EncodePngFromRgba(flipped, w, h, path);
+    }
+
+    /// <summary>Read the default-framebuffer back-buffer as RGBA8 and flip rows
+    /// from GL bottom-left into image-format top-left order. Returns false when
+    /// the framebuffer has no area yet.</summary>
+    private bool CaptureBackBufferRgba(out byte[] flipped, out int w, out int h)
+    {
+        w = _renderer.FramebufferSize.X;
+        h = _renderer.FramebufferSize.Y;
+        if (w <= 0 || h <= 0) { flipped = Array.Empty<byte>(); return false; }
+
+        var pixels = new byte[w * h * 4];
+        GL.PixelStore(PixelStoreParameter.PackAlignment, 1);
+        GL.ReadBuffer(ReadBufferMode.Back);
+        GL.ReadPixels(0, 0, w, h, PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
+
+        flipped = new byte[pixels.Length];
+        int stride = w * 4;
+        for (int y = 0; y < h; y++)
+            System.Buffer.BlockCopy(pixels, (h - 1 - y) * stride, flipped, y * stride, stride);
+        return true;
+    }
+
+    /// <summary>Encode an already-flipped RGBA8 buffer to a PNG file. Safe to
+    /// call from a worker thread (no GL state, no shared mutable state).</summary>
+    private static void EncodePngFromRgba(byte[] flipped, int w, int h, string path)
+    {
+        string? dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        var info = new SkiaSharp.SKImageInfo(w, h,
+            SkiaSharp.SKColorType.Rgba8888, SkiaSharp.SKAlphaType.Premul);
+        using var bmp = new SkiaSharp.SKBitmap(info);
+        System.Runtime.InteropServices.Marshal.Copy(flipped, 0, bmp.GetPixels(), flipped.Length);
+        using var img = SkiaSharp.SKImage.FromBitmap(bmp);
+        using var data = img.Encode(SkiaSharp.SKEncodedImageFormat.Png, 95);
+        using var fs = File.OpenWrite(path);
+        data.SaveTo(fs);
+    }
+
+    // -------- A7 (interactive): F9 toggles in-app frame recording --------------
+
+    /// <summary>Resolve an ffmpeg executable: explicit env-var override
+    /// <c>SOLARSYSTEM_FFMPEG</c> takes precedence, otherwise plain <c>ffmpeg</c>
+    /// (relies on <c>PATH</c>). Returns null when nothing usable is configured.</summary>
+    private static string? ResolveFfmpeg()
+    {
+        var env = Environment.GetEnvironmentVariable("SOLARSYSTEM_FFMPEG");
+        if (!string.IsNullOrWhiteSpace(env)) return env;
+        // Just trust PATH — Process.Start will fail loudly if it's not there and
+        // ToggleRecording surfaces the failure on the banner.
+        return "ffmpeg";
+    }
+
+    private void ToggleRecording()
+    {
+        if (!_recording)
+        {
+            _recordDir = Path.Combine("recordings", $"rec_{DateTime.Now:yyyyMMdd_HHmmss}");
+            try { Directory.CreateDirectory(_recordDir); }
+            catch (Exception ex)
+            {
+                _seekFeedback = $"Record failed: {ex.Message}";
+                _seekFeedbackUntil = GLFW.GetTime() + 3.0;
+                return;
+            }
+            _recordFrameIndex = 0;
+            _recordStartedAt = GLFW.GetTime();
+            _recording = true;
+            _audio.PlayTick();
+            _seekFeedback = Localization.T("ui.record.start", _recordDir);
+            _seekFeedbackUntil = GLFW.GetTime() + 2.5;
+            Debug.WriteLine($"[record] start -> {_recordDir}");
+        }
+        else
+        {
+            _recording = false;
+            double elapsed = GLFW.GetTime() - _recordStartedAt;
+            int frames = _recordFrameIndex;
+            _audio.PlayTick();
+            _seekFeedback = Localization.T("ui.record.stop", frames, elapsed);
+            _seekFeedbackUntil = GLFW.GetTime() + 4.0;
+            Debug.WriteLine($"[record] stop {frames} frames in {elapsed:0.0}s");
+
+            // Snapshot pending encode tasks so the worker below can wait for
+            // them to finish before invoking ffmpeg. The render thread does NOT
+            // wait — UI keeps responding while encoding finishes asynchronously.
+            var pending = _recordEncodeTasks.ToArray();
+            _recordEncodeTasks.Clear();
+
+            // Encode video at the actual capture rate so playback speed matches
+            // wall-clock time. Clamp to >=1 so ffmpeg doesn't reject zero.
+            int actualFps = (int)Math.Max(1, Math.Round(frames / Math.Max(0.001, elapsed)));
+
+            // Best-effort encode in the background so the UI doesn't stall while
+            // ffmpeg processes thousands of frames.
+            string dir = _recordDir;
+            string outFile = Path.Combine(dir, "out.mp4");
+            string? ff = ResolveFfmpeg();
+            if (ff != null && frames >= 2)
+            {
+                Task.Run(() =>
+                {
+                    // Drain any in-flight PNG encodes first; ffmpeg expects the
+                    // full frame_NNNNN.png sequence to be on disk.
+                    try { Task.WaitAll(pending); }
+                    catch (Exception ex) { Debug.WriteLine($"[record] encode wait failed: {ex}"); }
+                    bool ok = HeadlessRenderJob.TryEncodePngSequence(ff, dir, actualFps, outFile, out string err);
+                    if (ok)
+                    {
+                        _seekFeedback = Localization.T("ui.record.encoded", outFile);
+                        _seekFeedbackUntil = GLFW.GetTime() + 5.0;
+                    }
+                    else
+                    {
+                        // Surface the failure so the user doesn't end up staring at
+                        // a 0-byte out.mp4 wondering what happened. err contains the
+                        // tail of ffmpeg's stderr (or the launch exception message).
+                        _seekFeedback = $"ffmpeg failed: {err}";
+                        _seekFeedbackUntil = GLFW.GetTime() + 8.0;
+                    }
+                });
+            }
+            else if (frames < 2)
+            {
+                _seekFeedback = $"Recorded {frames} frame(s) — need ≥ 2 to encode video";
+                _seekFeedbackUntil = GLFW.GetTime() + 5.0;
+            }
         }
     }
 

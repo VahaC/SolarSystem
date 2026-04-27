@@ -107,6 +107,8 @@ public static class Localization
             "F4          tidal-lock arrows (S13)\n" +
             "F5          alignment indicator (S14)\n" +
             "F6          N-body mode (S15)\n" +
+            "F7          GLSL hot-reload (A6)\n" +
+            "F9          start / stop video recording (A7)\n" +
             "Z           toggle lens flare (V6)\n" +
             "Tab         help full / mini / off (Q14)\n" +
             "S           toggle audio cues (Q15)\n" +
@@ -124,6 +126,19 @@ public static class Localization
         ["ui.nbody.banner"]    = "N-body mode (S15)",
         ["ui.lensflare.on"]    = "Lens flare: ON",
         ["ui.lensflare.off"]   = "Lens flare: OFF",
+        // A6: GLSL hot-reload (F7).
+        ["ui.hotreload.on"]    = "GLSL hot-reload: ON (watching Resources/Shaders)",
+        ["ui.hotreload.off"]   = "GLSL hot-reload: OFF",
+        ["ui.hotreload.swap"]  = "Reloaded shader: {0}",
+        ["ui.hotreload.error"] = "Shader error in {0}: {1}",
+        // A7: headless render banner (only seen if --render is launched with a window).
+        ["ui.render.progress"] = "Rendering frame {0}/{1} ({2:0.0}%)",
+        ["ui.render.done"]     = "Render complete: {0} frames -> {1}",
+        // A7 (interactive): F9 toggles in-app recording to a timestamped folder.
+        ["ui.record.start"]    = "● REC started -> {0}",
+        ["ui.record.stop"]     = "■ REC stopped: {0} frames in {1:0.0}s",
+        ["ui.record.encoded"]  = "■ REC encoded -> {0}",
+        ["ui.record.status"]   = "● REC {0:mm\\:ss}  {1} frames",
         // Settings panel (F1) row labels.
         ["ui.settings.orbits"]        = "Orbits",
         ["ui.settings.trails"]        = "Trails",

@@ -5,24 +5,49 @@ namespace SolarSystem;
 
 public sealed class ShaderProgram : IDisposable
 {
-    public int Handle { get; }
+    public int Handle { get; private set; }
     private readonly Dictionary<string, int> _uniforms = new();
 
     public ShaderProgram(string vertexSrc, string fragmentSrc)
     {
+        Handle = LinkProgram(vertexSrc, fragmentSrc);
+    }
+
+    /// <summary>A6: Recompile this program from new GLSL sources and swap the GL
+    /// handle in place. Throws (without modifying state) if the new program fails
+    /// to compile or link, so a typo in a watched .glsl file simply leaves the old
+    /// program running.</summary>
+    public void Reload(string vertexSrc, string fragmentSrc)
+    {
+        int newHandle = LinkProgram(vertexSrc, fragmentSrc);
+        int old = Handle;
+        Handle = newHandle;
+        _uniforms.Clear();
+        if (old != 0) GL.DeleteProgram(old);
+    }
+
+    private static int LinkProgram(string vertexSrc, string fragmentSrc)
+    {
         int vs = Compile(ShaderType.VertexShader, vertexSrc);
         int fs = Compile(ShaderType.FragmentShader, fragmentSrc);
-        Handle = GL.CreateProgram();
-        GL.AttachShader(Handle, vs);
-        GL.AttachShader(Handle, fs);
-        GL.LinkProgram(Handle);
-        GL.GetProgram(Handle, GetProgramParameterName.LinkStatus, out int ok);
+        int handle = GL.CreateProgram();
+        GL.AttachShader(handle, vs);
+        GL.AttachShader(handle, fs);
+        GL.LinkProgram(handle);
+        GL.GetProgram(handle, GetProgramParameterName.LinkStatus, out int ok);
         if (ok == 0)
-            throw new Exception("Program link error: " + GL.GetProgramInfoLog(Handle));
-        GL.DetachShader(Handle, vs);
-        GL.DetachShader(Handle, fs);
+        {
+            string log = GL.GetProgramInfoLog(handle);
+            GL.DeleteProgram(handle);
+            GL.DeleteShader(vs);
+            GL.DeleteShader(fs);
+            throw new Exception("Program link error: " + log);
+        }
+        GL.DetachShader(handle, vs);
+        GL.DetachShader(handle, fs);
         GL.DeleteShader(vs);
         GL.DeleteShader(fs);
+        return handle;
     }
 
     private static int Compile(ShaderType type, string src)

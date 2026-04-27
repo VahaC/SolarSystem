@@ -9,8 +9,19 @@ namespace SolarSystem;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        // A7: --render switches the app into a hidden, deterministic frame
+        // exporter. All other CLI knobs are parsed by HeadlessRenderJob.
+        HeadlessRenderJob? job;
+        try { job = HeadlessRenderJob.FromCli(args); }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            PrintUsage();
+            return;
+        }
+
         var nativeSettings = new NativeWindowSettings
         {
             ClientSize = new Vector2i(1280, 800),
@@ -18,13 +29,26 @@ internal static class Program
             APIVersion = new Version(3, 3),
             Profile = ContextProfile.Core,
             Flags = ContextFlags.ForwardCompatible,
-            StartVisible = true,
+            StartVisible = job == null,
             WindowBorder = WindowBorder.Resizable,
             Icon = TryLoadIcon("solar-system-logo.png"),
         };
 
-        using var window = new SolarSystemWindow(GameWindowSettings.Default, nativeSettings);
+        using var window = new SolarSystemWindow(GameWindowSettings.Default, nativeSettings)
+        {
+            Headless = job,
+        };
         window.Run();
+    }
+
+    private static void PrintUsage()
+    {
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  SolarSystem                                 (interactive)");
+        Console.WriteLine("  SolarSystem --render --from YYYY-MM-DD --to YYYY-MM-DD");
+        Console.WriteLine("              [--dt <days/frame>] [--frames N] [--fps N]");
+        Console.WriteLine("              [--out <dir>] [--ffmpeg <path>] [--video-out <file>]");
+        Console.WriteLine("              [--real-scale]");
     }
 
     /// <summary>

@@ -102,6 +102,7 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 | **F4** | Toggle tidal-lock arrows on locked moons (S13) |
 | **F5** | Toggle heliocentric-alignment indicator (S14) |
 | **F6** | Toggle N-body perturbation mode (S15) |
+| **F7** | Toggle GLSL hot-reload (A6) — edits to `Resources/Shaders/*.glsl` live-reload |
 | **Tab** | Cycle help overlay: full → minimal → hidden (Q14) |
 | **S** | Toggle audio cues (Q15) |
 | **Ctrl + Shift + B** | Step **back** through the eclipse / transit calendar (Q8 / S12) |
@@ -124,6 +125,23 @@ git clone https://github.com/VahaC/SolarSystem.git
 cd SolarSystem
 dotnet run -c Release
 ```
+
+### Headless render / video export (A7)
+
+The same binary can render a deterministic PNG sequence (and optionally encode
+it to MP4 via `ffmpeg`) without showing a window:
+
+```powershell
+# 365 frames covering one Earth year, 1 day per frame, 60 fps mp4
+dotnet run -c Release -- --render --from 2025-01-01 --to 2026-01-01 `
+    --dt 1.0 --fps 60 --out render --ffmpeg ffmpeg --video-out year.mp4
+```
+
+Flags: `--from / --to <YYYY-MM-DD>`, `--dt <days/frame>`, `--frames N`
+(overrides `--to`), `--fps N`, `--out <dir>`, `--ffmpeg <path>`,
+`--video-out <file.mp4>`, `--real-scale`. Sim time is pinned per frame so the
+output is identical regardless of how fast the offscreen loop runs; persisted
+UI state is loaded for camera / toggles but not overwritten.
 
 ### Textures
 
