@@ -10,3 +10,6 @@
 /SolarSystem.Tests/obj
 /SolarSystem.csproj.Backup.tmp
 /bin/Release/net10.0
+/graphify-out
+/CLAUDE.md
+/.claude
