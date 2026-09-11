@@ -16,6 +16,7 @@ public sealed class Renderer : IDisposable
     private int _quadVao, _quadVbo;
     private int _axisVao, _axisVbo;
     private int _textVao, _textVbo;
+    private int _whiteTexture;
     private int _trailVao, _trailVbo;
     private const int TextMaxQuads = 1024;
 
@@ -366,6 +367,16 @@ public sealed class Renderer : IDisposable
 
     private void BuildTextBuffer()
     {
+        // 1x1 opaque white texture so FillRect can reuse the text shader (which
+        // reads the atlas alpha as the coverage mask) for solid UI rectangles.
+        _whiteTexture = GL.GenTexture();
+        GL.BindTexture(TextureTarget.Texture2D, _whiteTexture);
+        GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, 1, 1, 0,
+            PixelFormat.Rgba, PixelType.UnsignedByte, new byte[] { 255, 255, 255, 255 });
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+
         _textVao = GL.GenVertexArray();
         _textVbo = GL.GenBuffer();
         GL.BindVertexArray(_textVao);
@@ -1081,6 +1092,49 @@ public sealed class Renderer : IDisposable
         GL.Disable(EnableCap.Blend);
     }
 
+    /// <summary>Fill an axis-aligned screen-space rectangle (top-left origin,
+    /// pixels) with a flat colour. Alpha-blended; used for panel backgrounds,
+    /// hover highlights and toolbar buttons so overlays stay readable against
+    /// the bright Sun / Milky Way.</summary>
+    public void FillRect(float x, float y, float w, float h, Vector4 color)
+    {
+        if (w <= 0f || h <= 0f || color.W <= 0f) return;
+        float x1 = x + w, y1 = y + h;
+        const float u = 0.5f, v = 0.5f;
+        float[] verts =
+        {
+            x,  y,  u, v,
+            x1, y,  u, v,
+            x1, y1, u, v,
+            x,  y,  u, v,
+            x1, y1, u, v,
+            x,  y1, u, v,
+        };
+
+        _textShader.Use();
+        var ortho = Matrix4.CreateOrthographicOffCenter(0, FramebufferSize.X, FramebufferSize.Y, 0, -1, 1);
+        _textShader.SetMatrix4("uProj", ortho);
+        _textShader.SetVector4("uColor", color);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindTexture(TextureTarget.Texture2D, _whiteTexture);
+        _textShader.SetInt("uTex", 0);
+
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.Disable(EnableCap.DepthTest);
+        GL.Disable(EnableCap.CullFace);
+
+        GL.BindVertexArray(_textVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _textVbo);
+        GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, verts.Length * sizeof(float), verts);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        GL.BindVertexArray(0);
+
+        GL.Enable(EnableCap.CullFace);
+        GL.Enable(EnableCap.DepthTest);
+        GL.Disable(EnableCap.Blend);
+    }
+
     /// <summary>Draws a label at a world position by projecting to screen.</summary>
     public void DrawLabel(BitmapFont font, Camera cam, Vector3 worldPos, string text, float pixelSize, Vector4 color)
     {
@@ -1143,6 +1197,7 @@ public sealed class Renderer : IDisposable
         GL.DeleteTexture(_sunTexture);
         GL.DeleteTexture(_ringTexture);
         GL.DeleteTexture(_starsTexture);
+        if (_whiteTexture != 0) GL.DeleteTexture(_whiteTexture);
         if (_hdrFbo != 0) GL.DeleteFramebuffer(_hdrFbo);
         if (_hdrColor != 0) GL.DeleteTexture(_hdrColor);
         if (_hdrDepth != 0) GL.DeleteRenderbuffer(_hdrDepth);

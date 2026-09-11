@@ -1,0 +1,47 @@
+// Optional keyboard overrides. Each entry is "<feature or command id>": "<chord>[, <chord>...]".
+// Chords: letters / digits, F1..F25, Space, Tab, Esc, Enter, ~, + - , . Up Down Left Right,
+// NumN / Num+ / Num-, with Ctrl+ / Shift+ / Alt+ prefixes. An empty string unbinds.
+// Every id is listed in the F1 panel (hover a row) and in the Ctrl+K palette.
+//
+// Defaults shipped with the app (already active, listed here for reference):
+//   pause Space · speed.up + · speed.down - · time.reverse , · time.forward .
+//   focus.sun 0 · focus.1..8 1..8 · orbits O · labels L · trails T · realscale R
+//   settings F1 · language F2 · bookmarks F3 · record F9 · profiler F10 · screenshot F12
+//   help Tab · hud ~ · palette Ctrl+K · search Ctrl+F · seek J · fullscreen Alt+Enter
+//   bookmark.next Ctrl+E · bookmark.prev Ctrl+Shift+E
+//   waypoint.1..9 Ctrl+1..9 · waypoint.clear.1..9 Ctrl+Shift+1..9 · path.play Shift+P · path.clear Ctrl+Shift+P
+//
+// Everything else (axes, dwarfs, probes, lagrange, constellations, tidal, alignment, meteors,
+// lighttime, nbody, solarwind, solarflares, corona, aurora, atmosphere, eclipses, pbr, oceanmask,
+// bloom, autoexposure, fxaa, lensflare, toolbar, timeline, audio, hotreload, gpubelt, quit)
+// has no default key: use the F1 panel or Ctrl+K, or bind it here.
+//
+// To restore the pre-2026 single-letter layout, uncomment the block below.
+{
+  // "axes": "A",
+  // "dwarfs": "D",
+  // "solarwind": "W",
+  // "solarflares": "F",
+  // "constellations": "C",
+  // "probes": "P",
+  // "lagrange": "G",
+  // "meteors": "M",
+  // "lighttime": "Y",
+  // "eclipses": "H",
+  // "atmosphere": "N",
+  // "autoexposure": "E",
+  // "fxaa": "X",
+  // "corona": "U",
+  // "aurora": "K",
+  // "pbr": "I",
+  // "oceanmask": "Q",
+  // "bloom": "B",
+  // "lensflare": "Z",
+  // "timeline": "V",
+  // "audio": "S",
+  // "tidal": "F4",
+  // "alignment": "F5",
+  // "nbody": "F6",
+  // "hotreload": "F7",
+  // "gpubelt": "F8",
+}

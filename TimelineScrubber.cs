@@ -37,6 +37,12 @@ public sealed class TimelineScrubber
         _barY = viewportH - YOffset;
     }
 
+    /// <summary>Top edge (screen px) of everything the scrubber paints — the
+    /// date label baseline sits 18 px above the bar with ~12 px of ink above
+    /// that, plus the bookmark ticks. Bottom-anchored overlays (toolbar) use
+    /// this to stack above the scrubber instead of guessing.</summary>
+    public float Top => Visible ? _barY - 34f : float.MaxValue;
+
     public bool HitTest(Vector2 mouse)
     {
         if (!Visible) return false;

@@ -171,4 +171,60 @@ public class SettingsPanelTests
         for (int i = 0; i < 50; i++) p.TryHandleClick(new Vector2(5, 5));
         Assert.Equal(0f, v);
     }
+    [Fact]
+    public void TryHandleClick_OnTabHit_SwitchesActiveTab()
+    {
+        var p = new SettingsPanel { Visible = true };
+        p.SeedTabHitForTests(new SettingsPanel.Box(0, 0, 100, 20), FeatureCategory.Developer);
+        Assert.True(p.TryHandleClick(new Vector2(50, 10)));
+        Assert.Equal(FeatureCategory.Developer, p.ActiveTab);
+    }
+
+    [Fact]
+    public void TryHandleClick_OnPresetAndToolButtons_InvokesCallbacks()
+    {
+        var p = new SettingsPanel { Visible = true, ActiveTab = FeatureCategory.PostFx };
+        FeaturePreset? applied = null;
+        var resets = new List<FeatureCategory>();
+        var setAll = new List<(FeatureCategory, bool)>();
+        p.OnPreset = pr => applied = pr;
+        p.OnReset = c => resets.Add(c);
+        p.OnSetAll = (c, v) => setAll.Add((c, v));
+        var preset = new FeaturePreset { Id = "perf", LabelKey = "ui.preset.performance" };
+        p.SeedPresetHitForTests(new SettingsPanel.Box(0, 0, 50, 20), preset);
+        p.SeedToolButtonsForTests(
+            reset: new SettingsPanel.Box(0, 30, 50, 20),
+            allOn: new SettingsPanel.Box(60, 30, 50, 20),
+            allOff: new SettingsPanel.Box(120, 30, 50, 20));
+
+        Assert.True(p.TryHandleClick(new Vector2(10, 10)));
+        Assert.Same(preset, applied);
+        Assert.True(p.TryHandleClick(new Vector2(10, 40)));
+        Assert.Equal(new[] { FeatureCategory.PostFx }, resets);
+        Assert.True(p.TryHandleClick(new Vector2(70, 40)));
+        Assert.True(p.TryHandleClick(new Vector2(130, 40)));
+        Assert.Equal(new[] { (FeatureCategory.PostFx, true), (FeatureCategory.PostFx, false) }, setAll);
+    }
+
+    [Fact]
+    public void TryHandleClick_UnavailableToggle_ConsumesClickWithoutFlipping()
+    {
+        var state = new[] { false };
+        var p = BuildPanelWithToggles(1, state);
+        var row = (SettingsPanel.ToggleRow)p.RowsForTests[0];
+        row.Unavailable = () => "ui.gpubelt.unavailable";
+        row.Bounds = new SettingsPanel.Box(10, 10, 200, 22);
+        Assert.True(p.TryHandleClick(new Vector2(50, 20)));
+        Assert.False(state[0]);
+    }
+
+    [Fact]
+    public void CycleTab_WrapsAroundBothWays()
+    {
+        var p = new SettingsPanel { ActiveTab = FeatureCategory.Bodies };
+        p.CycleTab(-1);
+        Assert.Equal(FeatureCategory.Developer, p.ActiveTab);
+        p.CycleTab(+1);
+        Assert.Equal(FeatureCategory.Bodies, p.ActiveTab);
+    }
 }

@@ -75,6 +75,13 @@ public sealed class SolarSystemWindow : GameWindow
     private readonly BookmarksSidebar _bookSidebar = new();
     // A12: per-frame profiler (GPU time-elapsed queries + CPU stopwatch per pass).
     private readonly FrameProfiler _profiler = new();
+    // Feature registry (single source of truth for toggles / commands / keys),
+    // the Ctrl+K palette and the bottom toolbar derived from it.
+    private readonly FeatureRegistry _registry = new();
+    private readonly CommandPalette _palette = new();
+    private readonly Toolbar _toolbar = new();
+    /// <summary>Esc on an empty screen arms a 2 s window; a second Esc inside it quits.</summary>
+    private double _escArmedUntil = -1.0;
     private bool _showProfiler;
     private BitmapFont _font = null!;
     /// <summary>Indices 0..7 are the major planets (Mercury..Neptune); indices 8+
@@ -333,10 +340,12 @@ public sealed class SolarSystemWindow : GameWindow
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
         _camera.ResetDefault();
 
-        // Q12: populate the in-app settings panel with toggle/slider rows backed
-        // by closures over the same fields the keyboard shortcuts already touch,
-        // so the panel and the hotkeys are always in sync.
+        // Feature registry first: the settings panel, the toolbar, the key map,
+        // the palette and the persisted-state loader are all derived from it.
+        BuildFeatureRegistry();
+        _registry.TryLoadBindingsFile(msg => Debug.WriteLine("[keys] " + msg));
         BuildSettingsPanel();
+        BuildToolbar();
 
         // Q5: restore persisted UI state.
         // initialised camera / toggles / scale mode.
@@ -634,7 +643,7 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Q6: refresh hover-pick once per frame; tooltip rendering reads _hoverIndex.
         // Skipped while a modal prompt is open so it doesn't fight with the prompt UI.
-        if (!_seekActive && !_searchActive)
+        if (!_seekActive && !_searchActive && !_palette.Active)
             _hoverIndex = TryPick(_mousePos);
         else
             _hoverIndex = -2;
@@ -654,16 +663,32 @@ public sealed class SolarSystemWindow : GameWindow
         string speedStr = _paused
             ? "PAUSED"
             : $"{(_daysPerSecond < 0 ? "◀ " : "")}x{Math.Abs(_daysPerSecond):0.##} days/s";
-        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}  |  [Space] pause  [, .] reverse/forward  [+/-] speed  [0-8] focus  [O] orbits  [T] trails  [L] labels  [W] wind  [F] flares  [R] scale  [D] dwarfs  [C] constellations";
+        Title = $"Solar System  |  {date:yyyy-MM-dd}  |  speed {speedStr}";
+    }
+
+    /// <summary>Show a transient banner at the top-centre of the screen.</summary>
+    private void ShowBanner(string text) => ShowBanner(text, 2.0);
+
+    private void ShowBanner(string text, double seconds)
+    {
+        _seekFeedback = text;
+        _seekFeedbackUntil = GLFW.GetTime() + seconds;
     }
 
     /// <summary>One-shot keyboard handling. More reliable than polling KeyboardState.IsKeyPressed
     /// every frame: the GLFW key event fires exactly once per physical press, with no risk of
-    /// missing the press window between two update ticks.</summary>
+    /// missing the press window between two update ticks.
+    ///
+    /// Only the modal prompts (date seek, search, palette) and <c>Esc</c> are
+    /// handled here; every other chord is resolved through the
+    /// <see cref="FeatureRegistry"/> so the key map lives in exactly one place
+    /// (and can be overridden from <c>data/keybindings.json</c>).</summary>
     protected override void OnKeyDown(KeyboardKeyEventArgs e)
     {
         base.OnKeyDown(e);
         if (e.IsRepeat && !_seekActive) return;
+
+        const KeyModifiers Chord = KeyModifiers.Control | KeyModifiers.Shift | KeyModifiers.Alt;
 
         // Alt+Enter toggles borderless fullscreen. Handled before the modal
         // prompts so it works even while the date-seek / search prompt is open
@@ -671,7 +696,15 @@ public sealed class SolarSystemWindow : GameWindow
         if ((e.Key == Keys.Enter || e.Key == Keys.KeyPadEnter)
             && (e.Modifiers & KeyModifiers.Alt) != 0)
         {
-            ToggleFullscreen();
+            var fs = _registry.FindFeature("fullscreen");
+            if (fs != null) _registry.Invoke(fs, ShowBanner);
+            return;
+        }
+
+        // Ctrl+K palette is modal and eats every key while open.
+        if (_palette.Active)
+        {
+            _palette.HandleKey(e.Key, e.Modifiers, _registry, ShowBanner);
             return;
         }
 
@@ -718,323 +751,27 @@ public sealed class SolarSystemWindow : GameWindow
             return;
         }
 
-        // Q3: Ctrl+F opens the name-search prompt. Handled before the F-key fallthrough
-        // so it doesn't also toggle the solar flares.
-        if (e.Key == Keys.F && (e.Modifiers & KeyModifiers.Control) != 0)
+        // Esc closes the topmost panel. On an empty screen it has to be pressed
+        // twice within 2 s to quit, so a stray press can no longer kill the session.
+        if (e.Key == Keys.Escape && (e.Modifiers & Chord) == 0)
         {
-            _searchActive = true;
-            _searchBuffer = "";
-            _searchSwallowNextChar = true;
+            if (_settings.Visible) { _settings.Visible = false; return; }
+            if (_bookSidebar.Visible) { _bookSidebar.Visible = false; return; }
+            double now = GLFW.GetTime();
+            if (now < _escArmedUntil) { Close(); return; }
+            _escArmedUntil = now + 2.0;
+            ShowBanner(Localization.T("ui.quit.confirm"), 2.0);
             return;
         }
 
-        // Q8 / S12: F3 toggles the bookmarks sidebar. (Ctrl+B is reserved by the
-        // host OS, so the sidebar uses an F-key like the other panels.)
-        if (e.Key == Keys.F3)
+        // Settings panel open: Left / Right switch tabs.
+        if (_settings.Visible && (e.Key == Keys.Left || e.Key == Keys.Right) && (e.Modifiers & Chord) == 0)
         {
-            _bookSidebar.Visible = !_bookSidebar.Visible;
-            _seekFeedback = $"Bookmarks: {(_bookSidebar.Visible ? "ON" : "OFF")}";
-            _seekFeedbackUntil = GLFW.GetTime() + 1.5;
+            _settings.CycleTab(e.Key == Keys.Right ? 1 : -1);
             return;
         }
 
-        // S12: Ctrl+E cycles eclipse / transit bookmarks. Handled before the bare E
-        // key (auto-exposure toggle) so the modifier variant doesn't also fire it.
-        if (e.Key == Keys.E && (e.Modifiers & KeyModifiers.Control) != 0)
-        {
-            // Q8: Ctrl+Shift+E steps backward, Ctrl+E forward.
-            var entry = (e.Modifiers & KeyModifiers.Shift) != 0
-                ? _bookmarks.Prev(_simDays)
-                : _bookmarks.Next(_simDays);
-            if (entry is { } ev)
-            {
-                _simDays = Bookmarks.ToSimDays(ev);
-                ClearAllTrails();
-                _audio.PlayTick();
-                _seekFeedback = $"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}";
-                _seekFeedbackUntil = GLFW.GetTime() + 4.0;
-            }
-            return;
-        }
-
-        // Q10: Ctrl+1..9 records a camera waypoint, Ctrl+Shift+1..9 clears it,
-        // Shift+P plays the current path, Ctrl+Shift+P clears all slots.
-        if ((e.Modifiers & KeyModifiers.Control) != 0 && TryHandleCameraPathKey(e))
-            return;
-        if (e.Key == Keys.P && (e.Modifiers & KeyModifiers.Shift) != 0)
-        {
-            if ((e.Modifiers & KeyModifiers.Control) != 0)
-            {
-                _camPath.ClearAll();
-                _seekFeedback = "Camera path cleared";
-            }
-            else if (_camPath.Play(6.0))
-            {
-                _audio.PlayWhoosh();
-                _seekFeedback = "Playing camera path…";
-            }
-            else
-            {
-                _seekFeedback = "Need ≥ 2 waypoints — record with Ctrl+1..9";
-            }
-            _seekFeedbackUntil = GLFW.GetTime() + 2.5;
-            return;
-        }
-
-        switch (e.Key)
-        {
-            case Keys.Escape:
-                Close();
-                break;
-
-            case Keys.J:
-                _seekActive = true;
-                _seekBuffer = "";
-                _seekFeedback = "";
-                _seekSwallowNextChar = true;
-                break;
-
-            case Keys.Space: _paused = !_paused; break;
-            case Keys.O: _showOrbits = !_showOrbits; break;
-            case Keys.A: _showAxes = !_showAxes; break;
-            case Keys.L: _showLabels = !_showLabels; break;
-            case Keys.T: _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); break;
-            case Keys.D:
-                _showDwarfs = !_showDwarfs;
-                // If a dwarf was the active focus / selection, drop back to the Sun so
-                // the camera doesn't keep tracking an invisible body.
-                if (!_showDwarfs)
-                {
-                    if (_focusIndex >= _dwarfStart && _focusIndex < _planets.Length) FocusOn(-1);
-                    if (_selectedIndex >= _dwarfStart && _selectedIndex < _planets.Length) _selectedIndex = -2;
-                    // Clear stale dwarf trails so they don't reappear as a frozen line strip
-                    // on the next toggle-on.
-                    for (int i = _dwarfStart; i < _planets.Length; i++) _planets[i].TrailReset();
-                }
-                break;
-            case Keys.W: _solarWind.Enabled = !_solarWind.Enabled; break;
-            case Keys.F: _solarFlares.Enabled = !_solarFlares.Enabled; break;
-            case Keys.R: ToggleRealScale(); break;
-            case Keys.C: _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; break;
-
-            // S9–S11.
-            case Keys.P: _showProbes = !_showProbes; break;
-            case Keys.G: _showLagrange = !_showLagrange; break;
-            case Keys.M:
-                _showMeteors = !_showMeteors;
-                if (!_showMeteors)
-                {
-                    _seekFeedback = "Meteor showers: OFF";
-                }
-                else if (_meteors.ActiveShowerName.Length > 0)
-                {
-                    _seekFeedback = $"Meteor showers: ON — {_meteors.ActiveShowerName} active";
-                }
-                else
-                {
-                    var next = _meteors.NextPeak(_simDays);
-                    _seekFeedback = next is { } n
-                        ? $"Meteor showers: ON — next: {n.Name} in {n.DaysUntil} day{(n.DaysUntil == 1 ? "" : "s")}"
-                        : "Meteor showers: ON";
-                }
-                _seekFeedbackUntil = GLFW.GetTime() + 3.0;
-                break;
-            case Keys.Y:
-                _lightTime = !_lightTime;
-                _seekFeedback = _lightTime
-                    ? "Light-time: ON (Sun lighting delayed by r/c)"
-                    : "Light-time: OFF";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.5;
-                break;
-
-            // V8/V9/V10/V11: master toggles for the post-FX added in those passes.
-            case Keys.H:
-                _renderer.EclipsesEnabled = !_renderer.EclipsesEnabled;
-                _seekFeedback = $"Eclipses: {(_renderer.EclipsesEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.N:
-                _renderer.AtmosphereEnabled = !_renderer.AtmosphereEnabled;
-                _seekFeedback = $"Atmosphere: {(_renderer.AtmosphereEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.E:
-                if ((e.Modifiers & KeyModifiers.Control) != 0) break; // handled above as bookmark cycle
-                _renderer.AutoExposureEnabled = !_renderer.AutoExposureEnabled;
-                _seekFeedback = $"Auto-exposure: {(_renderer.AutoExposureEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.X:
-                _renderer.FxaaEnabled = !_renderer.FxaaEnabled;
-                _seekFeedback = $"FXAA: {(_renderer.FxaaEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.U:
-                _renderer.CoronaEnabled = !_renderer.CoronaEnabled;
-                _seekFeedback = $"Sun corona (V12): {(_renderer.CoronaEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.K:
-                _showAurora = !_showAurora;
-                _aurora.Enabled = _showAurora;
-                _seekFeedback = $"Aurora (V13): {(_showAurora ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.I:
-                _renderer.PbrEnabled = !_renderer.PbrEnabled;
-                _seekFeedback = $"PBR shading (V14): {(_renderer.PbrEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.Q:
-                _renderer.OceanMaskEnabled = !_renderer.OceanMaskEnabled;
-                _seekFeedback = $"Ocean specular (V15): {(_renderer.OceanMaskEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.B:
-                _renderer.BloomEnabled = !_renderer.BloomEnabled;
-                _seekFeedback = $"Bloom: {(_renderer.BloomEnabled ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.Z:
-                _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled;
-                _seekFeedback = Localization.T(_renderer.LensFlareEnabled ? "ui.lensflare.on" : "ui.lensflare.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-
-            // Q7: HUD overlay (FPS + particle counts).
-            case Keys.GraveAccent: _showHud = !_showHud; break;
-
-            // Q9 / Q12 / Q13 / Q14 / Q15.
-            case Keys.V:
-                _scrubber.Visible = !_scrubber.Visible;
-                _seekFeedback = $"Timeline: {(_scrubber.Visible ? "ON" : "OFF")}";
-                _seekFeedbackUntil = GLFW.GetTime() + 1.5;
-                break;
-            case Keys.Tab:
-                _helpMode = (_helpMode + 1) % 3;
-                break;
-            case Keys.F1:
-                _settings.Visible = !_settings.Visible;
-                break;
-            case Keys.F2:
-            {
-                var code = Localization.CycleNext();
-                _seekFeedback = Localization.T("ui.lang.toggled", code);
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            }
-            // S13 / S14 / S15.
-            case Keys.F4:
-                _showTidalLock = !_showTidalLock;
-                _seekFeedback = Localization.T(_showTidalLock ? "ui.tidal.on" : "ui.tidal.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.F5:
-                _showAlignment = !_showAlignment;
-                _seekFeedback = Localization.T(_showAlignment ? "ui.alignment.on" : "ui.alignment.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-            case Keys.F6:
-                _nbodyEnabled = !_nbodyEnabled;
-                if (_nbodyEnabled) _nbodyDirty = true;
-                _seekFeedback = Localization.T(_nbodyEnabled ? "ui.nbody.on" : "ui.nbody.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 2.5;
-                break;
-            case Keys.S:
-                _audio.Enabled = !_audio.Enabled;
-                _seekFeedback = _audio.Enabled
-                    ? Localization.T("ui.audio.on")
-                    : Localization.T("ui.audio.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 1.5;
-                if (_audio.Enabled) _audio.PlayTick();
-                break;
-
-            // Q4: screenshot to ./screenshots/<timestamp>.png.
-            case Keys.F12:
-                SaveScreenshot();
-                break;
-
-            // A6: toggle GLSL hot-reload (FileSystemWatcher on Resources/Shaders).
-            case Keys.F7:
-                ShaderSources.SetHotReload(!ShaderSources.HotReloadEnabled);
-                _seekFeedback = Localization.T(ShaderSources.HotReloadEnabled
-                    ? "ui.hotreload.on" : "ui.hotreload.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 2.5;
-                break;
-
-            // A7 (interactive): F9 starts / stops video recording.
-            case Keys.F9:
-                ToggleRecording();
-                break;
-
-            // A12: F10 toggles the per-pass profiler overlay (GPU + CPU ms).
-            case Keys.F10:
-                _showProfiler = !_showProfiler;
-                _seekFeedback = Localization.T(_showProfiler ? "ui.profiler.on" : "ui.profiler.off");
-                _seekFeedbackUntil = GLFW.GetTime() + 2.0;
-                break;
-
-            // A8: toggle GPU compute path for the asteroid belt's Kepler solve.
-            case Keys.F8:
-                if (_belt.GpuComputeAvailable)
-                {
-                    _belt.UseGpuCompute = !_belt.UseGpuCompute;
-                    _seekFeedback = Localization.T(_belt.UseGpuCompute
-                        ? "ui.gpubelt.on" : "ui.gpubelt.off");
-                }
-                else
-                {
-                    _seekFeedback = Localization.T("ui.gpubelt.unavailable")
-                        + (string.IsNullOrEmpty(_belt.LastInitError) ? "" : "\n" + _belt.LastInitError);
-                }
-                _seekFeedbackUntil = GLFW.GetTime() + 6.0;
-                break;
-
-            case Keys.KeyPadAdd:
-            case Keys.Equal:
-            {
-                // Operate on magnitude so reverse-time playback can also be sped up.
-                double sign = _daysPerSecond < 0 ? -1.0 : 1.0;
-                double mag = Math.Min(1000.0, Math.Abs(_daysPerSecond) * 1.5);
-                _daysPerSecond = sign * mag;
-                break;
-            }
-            case Keys.KeyPadSubtract:
-            case Keys.Minus:
-            {
-                double sign = _daysPerSecond < 0 ? -1.0 : 1.0;
-                double mag = Math.Max(0.1, Math.Abs(_daysPerSecond) / 1.5);
-                _daysPerSecond = sign * mag;
-                break;
-            }
-
-            // Reverse-time controls: ',' forces backward playback, '.' forces forward.
-            // Magnitude is preserved so toggling direction doesn't change speed.
-            case Keys.Comma:
-                if (_daysPerSecond > 0) ClearAllTrails();
-                _daysPerSecond = -Math.Abs(_daysPerSecond);
-                break;
-            case Keys.Period:
-                if (_daysPerSecond < 0) ClearAllTrails();
-                _daysPerSecond = Math.Abs(_daysPerSecond);
-                break;
-
-            case Keys.D0:
-            case Keys.KeyPad0:
-                _selectedIndex = -1;
-                FocusOn(-1);
-                Debug.WriteLine("[focus] Sun");
-                break;
-
-            case Keys.D1: case Keys.KeyPad1: FocusOn(0); _selectedIndex = 0; break;
-            case Keys.D2: case Keys.KeyPad2: FocusOn(1); _selectedIndex = 1; break;
-            case Keys.D3: case Keys.KeyPad3: FocusOn(2); _selectedIndex = 2; break;
-            case Keys.D4: case Keys.KeyPad4: FocusOn(3); _selectedIndex = 3; break;
-            case Keys.D5: case Keys.KeyPad5: FocusOn(4); _selectedIndex = 4; break;
-            case Keys.D6: case Keys.KeyPad6: FocusOn(5); _selectedIndex = 5; break;
-            case Keys.D7: case Keys.KeyPad7: FocusOn(6); _selectedIndex = 6; break;
-            case Keys.D8: case Keys.KeyPad8: FocusOn(7); _selectedIndex = 7; break;
-        }
+        _registry.Dispatch(e.Key, e.Modifiers, ShowBanner);
     }
 
     protected override void OnRenderFrame(FrameEventArgs args)
@@ -1211,20 +948,40 @@ public sealed class SolarSystemWindow : GameWindow
                     12, 52, 14, white);
         }
 
-        // Top-left help panel listing every available control. Body comes from
-        // Localization so the entire list translates with F2; the heading uses
-        // the same `ui.help.title` key as the rest of the UI. The list is laid
-        // out in as many columns as needed so it always fits the current
-        // viewport (small monitors get more columns / a smaller font instead of
-        // overflowing off-screen).
+        // Top-left help panel. Generated from the feature registry (plus a few
+        // hand-written mouse lines), so the cheat sheet can never drift from the
+        // real key map — including user overrides from keybindings.json. Laid
+        // out in as many columns as needed so it always fits the viewport.
         var dim = new Vector4(0.85f, 0.9f, 1f, 0.85f);
-        if (_helpMode == 0)
+        // The Ctrl+K palette is modal and sits over the same top-left area, so
+        // the cheat sheet is suppressed while it's open instead of bleeding
+        // through the palette background.
+        if (_helpMode == 0 && !_palette.Active)
         {
-            string body = Localization.T("ui.help.body");
-            string[] lines = body.Split('\n');
+            var pairs = new List<(string key, string label)>();
+            void AddStatic(string locKey)
+            {
+                foreach (var ln in Localization.T(locKey).Split('\n'))
+                {
+                    int sep = ln.IndexOf('|');
+                    pairs.Add(sep < 0 ? ("", ln.Trim()) : (ln[..sep].Trim(), ln[(sep + 1)..].Trim()));
+                }
+            }
+            AddStatic("ui.help.mouse");
+            AddStatic("ui.help.extra");
+            foreach (var e in _registry.Entries)
+            {
+                if (e.Bindings.Count == 0 || e.HideInHelp) continue;
+                pairs.Add((e.BindingText, e.Label));
+            }
+            pairs.Add(("Esc", Localization.T("ui.help.esc")));
 
             const float topY = 78f;
-            float bottomMargin = _scrubber.Visible ? 64f : 16f;
+            float bottomMargin = _scrubber.Visible ? 70f : 16f;
+            if (_toolbar.Visible) bottomMargin += Toolbar.Height + 8f;
+            // The selected-body info card (up to 7 lines) sits bottom-left in
+            // this help mode; keep the cheat sheet clear of it.
+            bottomMargin += 7f * 18f;
             float maxH = MathF.Max(120f, _renderer.FramebufferSize.Y - topY - bottomMargin);
             float maxW = MathF.Max(360f, _renderer.FramebufferSize.X - 24f);
 
@@ -1233,46 +990,46 @@ public sealed class SolarSystemWindow : GameWindow
 
             // Pick the smallest column count that fits vertically.
             int cols = 1;
-            int rowsPerCol = lines.Length;
+            int rowsPerCol = pairs.Count;
             while (rowsPerCol * LineH(pixelSize) > maxH && cols < 6)
             {
                 cols++;
-                rowsPerCol = (lines.Length + cols - 1) / cols;
+                rowsPerCol = (pairs.Count + cols - 1) / cols;
             }
             // Still too tall? Shrink the font (lower bound 8 px so glyphs stay legible).
             if (rowsPerCol * LineH(pixelSize) > maxH)
-            {
                 pixelSize = MathF.Max(8f, pixelSize * maxH / (rowsPerCol * LineH(pixelSize)));
-            }
 
-            // Compute column width from the widest single line, then shrink the
-            // font further if the columns would extend past the viewport edge.
-            float ColWidth(float ps)
+            // Column width = widest key + widest label; shrink the font further if
+            // the columns would extend past the viewport edge.
+            (float key, float label) Widths(float ps)
             {
-                float w = 0f;
-                foreach (var ln in lines)
+                float kw = 0f, lw = 0f;
+                foreach (var (k, l) in pairs)
                 {
-                    float lw = _font.MeasureWidth(ln, ps);
-                    if (lw > w) w = lw;
+                    kw = MathF.Max(kw, _font.MeasureWidth(k, ps));
+                    lw = MathF.Max(lw, _font.MeasureWidth(l, ps));
                 }
-                return w + 16f;
+                return (kw + 10f, lw + 18f);
             }
-            float colW = ColWidth(pixelSize);
-            while (cols * colW > maxW && pixelSize > 8f)
+            var (keyW, labelW) = Widths(pixelSize);
+            while (cols * (keyW + labelW) > maxW && pixelSize > 8f)
             {
                 pixelSize = MathF.Max(8f, pixelSize - 0.5f);
-                colW = ColWidth(pixelSize);
+                (keyW, labelW) = Widths(pixelSize);
             }
 
             _renderer.DrawText(_font, Localization.T("ui.help.title"), 12f, topY - 4f, 13f, dim);
             float lh = LineH(pixelSize);
-            for (int i = 0; i < lines.Length; i++)
+            var keyCol = new Vector4(1f, 0.95f, 0.7f, 0.9f);
+            for (int i = 0; i < pairs.Count; i++)
             {
                 int c = i / rowsPerCol;
                 int r = i % rowsPerCol;
-                float x = 12f + c * colW;
+                float x = 12f + c * (keyW + labelW);
                 float y = topY + 14f + r * lh;
-                _renderer.DrawText(_font, lines[i], x, y, pixelSize, dim);
+                _renderer.DrawText(_font, pairs[i].key, x, y, pixelSize, keyCol);
+                _renderer.DrawText(_font, pairs[i].label, x + keyW, y, pixelSize, dim);
             }
         }
         else if (_helpMode == 1)
@@ -1395,7 +1152,7 @@ public sealed class SolarSystemWindow : GameWindow
         }
 
         // Q6: hover tooltip beside the cursor.
-        if (!_seekActive && !_searchActive)
+        if (!_seekActive && !_searchActive && !_palette.Active)
         {
             string? tip = null;
             if (_hoverIndex == -1) tip = Localization.T("ui.tooltip.sun");
@@ -1436,14 +1193,24 @@ public sealed class SolarSystemWindow : GameWindow
         // bookmark catalogue so the bar can show coloured ticks for each event.
         _scrubber.Draw(_renderer, _font, _simDays, _bookmarks);
 
-        // Q12: in-app settings overlay. Drawn before the bookmarks sidebar so the
-        // sidebar can stack underneath it via _settings.Bottom.
-        _settings.Draw(_renderer, _font, _mousePos);
+        // Bottom-centre toolbar (pause / speed / core toggles / menus). Lifted
+        // above the timeline scrubber when that is visible.
+        _toolbar.Draw(_renderer, _font, _mousePos,
+            _scrubber.Visible ? _scrubber.Top - 6f : _renderer.FramebufferSize.Y - 10f);
 
-        // Q8 / S12: bookmarks sidebar (right-edge panel). When the settings panel
-        // is open we push the sidebar below it; otherwise it sits at y=150.
-        float sidebarTopY = _settings.Visible ? _settings.Bottom + 12f : 150f;
-        _bookSidebar.Draw(_renderer, _font, _bookmarks, _mousePos, _simDays, sidebarTopY);
+        // Q12: in-app settings overlay. Drawn before the bookmarks sidebar so the
+        // sidebar can stack underneath it via _settings.Bottom. Both panels are
+        // suppressed while the modal Ctrl+K palette is open so it never overlaps
+        // them; they reappear untouched when the palette closes.
+        if (!_palette.Active)
+        {
+            _settings.Draw(_renderer, _font, _mousePos);
+
+            // Q8 / S12: bookmarks sidebar (right-edge panel). When the settings panel
+            // is open we push the sidebar below it; otherwise it sits at y=150.
+            float sidebarTopY = _settings.Visible ? _settings.Bottom + 12f : 150f;
+            _bookSidebar.Draw(_renderer, _font, _bookmarks, _mousePos, _simDays, sidebarTopY);
+        }
 
         // Q10: small "PLAYING…" banner while a camera path is active.
         if (_camPath.IsPlaying)
@@ -1465,6 +1232,9 @@ public sealed class SolarSystemWindow : GameWindow
                 _renderer.FramebufferSize.X * 0.5f - 80f, 8f, 14f,
                 new Vector4(1f, 0.25f, 0.25f, 0.95f));
         }
+
+        // Ctrl+K palette: modal, so it sits above every other panel.
+        _palette.Draw(_renderer, _font, _mousePos);
 
         // A12: profiler overlay (per-pass GPU + CPU times). Drawn last so it sits
         // on top of everything else; toggled with F10.
@@ -1532,10 +1302,21 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
-        var pos = new Vector2(MouseState.X, MouseState.Y);
+        // Same source as the hover highlight (OnMouseMove), so the row that
+        // lights up under the cursor is exactly the row a click hits.
+        var pos = _mousePos;
 
+        // Ctrl+K palette is modal: a click on a row runs it, anywhere else closes it.
+        if (_palette.Active)
+        {
+            if (e.Button == MouseButton.Left && !_palette.TryHandleClick(pos, _registry, ShowBanner))
+                _palette.Close();
+            return;
+        }
         // Q12: settings panel takes click priority when open.
         if (e.Button == MouseButton.Left && _settings.TryHandleClick(pos)) return;
+        // Bottom toolbar buttons.
+        if (e.Button == MouseButton.Left && _toolbar.TryHandleClick(pos)) return;
         // Q8 / S12: bookmarks sidebar — filter cycle / row jump.
         if (e.Button == MouseButton.Left && _bookSidebar.TryHandleClick(pos, _bookmarks, out var jumpTo))
         {
@@ -1885,6 +1666,11 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnTextInput(TextInputEventArgs e)
     {
         base.OnTextInput(e);
+        if (_palette.Active)
+        {
+            _palette.AppendText(e.AsString, _registry);
+            return;
+        }
         if (_seekActive)
         {
             if (_seekSwallowNextChar) { _seekSwallowNextChar = false; return; }
@@ -1937,43 +1723,584 @@ public sealed class SolarSystemWindow : GameWindow
         return true;
     }
 
-    /// <summary>Q12: build the in-app settings rows. Each row is backed by a
-    /// closure over the existing fields so the panel stays consistent with the
-    /// keyboard shortcuts without any extra state plumbing.</summary>
+    // -------- Feature registry: the one list every menu / key / save derives from --
+
+    /// <summary>Populate <see cref="_registry"/>. Each entry's <c>Set</c> carries
+    /// every side-effect the old hotkey switch used to perform (trail clears,
+    /// integrator resync, focus fix-ups) so the panel, the palette, presets and
+    /// the persisted-state loader all behave identically to the keyboard.
+    /// Registration order matters in two places: it is the display order in the
+    /// panel / palette / help, and it is the order <see cref="FeatureRegistry.Restore"/>
+    /// applies saved values — so real-scale goes first (camera limits depend on it).</summary>
+    private void BuildFeatureRegistry()
+    {
+        var r = _registry;
+
+        // ---- Simulation ----------------------------------------------------------------
+        r.Add(new Feature
+        {
+            Id = "realscale", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.realscale",
+            Get = () => OrbitalMechanics.RealScale,
+            Set = v => { if (v != OrbitalMechanics.RealScale) ToggleRealScale(); },
+            Default = false, LegacyKey = "RealScale",
+            Banner = v => Localization.T(v ? "ui.scale.banner.real" : "ui.scale.banner.compressed"),
+        }).WithKey(Keys.R);
+        r.Add(new Feature
+        {
+            Id = "pause", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.pause",
+            Get = () => _paused, Set = v => _paused = v, Default = false, LegacyKey = "Paused",
+            Banner = _ => "",
+        }).WithKey(Keys.Space);
+        r.Add(new Feature
+        {
+            Id = "lighttime", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.lighttime",
+            Get = () => _lightTime, Set = v => _lightTime = v, Default = false, LegacyKey = "LightTime",
+            Banner = v => Localization.T(v ? "ui.lighttime.on" : "ui.lighttime.off"),
+        });
+        r.Add(new Feature
+        {
+            Id = "nbody", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.nbody",
+            Get = () => _nbodyEnabled,
+            Set = v => { _nbodyEnabled = v; if (v) _nbodyDirty = true; },
+            Default = false, LegacyKey = "NBodyEnabled",
+            Banner = v => Localization.T(v ? "ui.nbody.on" : "ui.nbody.off"),
+        });
+        r.Add(new Feature
+        {
+            Id = "meteors", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.meteors",
+            Get = () => _showMeteors, Set = v => _showMeteors = v, Default = true, LegacyKey = "ShowMeteors",
+            Banner = v =>
+            {
+                if (!v) return Localization.T("ui.meteors.off");
+                if (_meteors.ActiveShowerName.Length > 0)
+                    return Localization.T("ui.meteors.on.active", _meteors.ActiveShowerName);
+                var next = _meteors.NextPeak(_simDays);
+                return next is { } n
+                    ? Localization.T("ui.meteors.on.next", n.Name, n.DaysUntil)
+                    : Localization.T("ui.meteors.on");
+            },
+        });
+        r.Add(new Command
+        {
+            Id = "speed.up", Category = FeatureCategory.Simulation, LabelKey = "ui.cmd.speedup",
+            Run = () => ScaleSpeed(1.5), ClosesPalette = false,
+            Status = () => $"{Math.Abs(_daysPerSecond):0.##} d/s",
+        }).WithKey(Keys.Equal).WithKey(Keys.KeyPadAdd);
+        r.Add(new Command
+        {
+            Id = "speed.down", Category = FeatureCategory.Simulation, LabelKey = "ui.cmd.speeddown",
+            Run = () => ScaleSpeed(1.0 / 1.5), ClosesPalette = false,
+            Status = () => $"{Math.Abs(_daysPerSecond):0.##} d/s",
+        }).WithKey(Keys.Minus).WithKey(Keys.KeyPadSubtract);
+        r.Add(new Command
+        {
+            Id = "time.reverse", Category = FeatureCategory.Simulation, LabelKey = "ui.cmd.reverse",
+            Run = () => SetDirection(backward: true), ClosesPalette = false,
+        }).WithKey(Keys.Comma);
+        r.Add(new Command
+        {
+            Id = "time.forward", Category = FeatureCategory.Simulation, LabelKey = "ui.cmd.forward",
+            Run = () => SetDirection(backward: false), ClosesPalette = false,
+        }).WithKey(Keys.Period);
+
+        // ---- Bodies ----------------------------------------------------------------------
+        r.Add(new Feature
+        {
+            Id = "orbits", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.orbits",
+            Get = () => _showOrbits, Set = v => _showOrbits = v, Default = true, LegacyKey = "ShowOrbits",
+        }).WithKey(Keys.O);
+        r.Add(new Feature
+        {
+            Id = "labels", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.labels",
+            Get = () => _showLabels, Set = v => _showLabels = v, Default = true, LegacyKey = "ShowLabels",
+        }).WithKey(Keys.L);
+        r.Add(new Feature
+        {
+            Id = "trails", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.trails",
+            Get = () => _showTrails,
+            Set = v => { _showTrails = v; if (!v) ClearAllTrails(); },
+            Default = true, LegacyKey = "ShowTrails",
+        }).WithKey(Keys.T);
+        r.Add(new Feature
+        {
+            Id = "axes", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.axes",
+            Get = () => _showAxes, Set = v => _showAxes = v, Default = false, LegacyKey = "ShowAxes",
+        });
+        r.Add(new Feature
+        {
+            Id = "dwarfs", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.dwarfs",
+            Get = () => _showDwarfs,
+            Set = v =>
+            {
+                _showDwarfs = v;
+                // If a dwarf was the active focus / selection, drop back to the Sun so
+                // the camera doesn't keep tracking an invisible body.
+                if (!v)
+                {
+                    if (_focusIndex >= _dwarfStart && _focusIndex < _planets.Length) FocusOn(-1);
+                    if (_selectedIndex >= _dwarfStart && _selectedIndex < _planets.Length) _selectedIndex = -2;
+                    // Clear stale dwarf trails so they don't reappear as a frozen line strip
+                    // on the next toggle-on.
+                    for (int i = _dwarfStart; i < _planets.Length; i++) _planets[i].TrailReset();
+                }
+            },
+            Default = true, LegacyKey = "ShowDwarfs",
+        });
+        r.Add(new Feature
+        {
+            Id = "probes", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.probes",
+            Get = () => _showProbes, Set = v => _showProbes = v, Default = true, LegacyKey = "ShowProbes",
+        });
+        r.Add(new Feature
+        {
+            Id = "lagrange", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.lagrange",
+            Get = () => _showLagrange, Set = v => _showLagrange = v, Default = false, LegacyKey = "ShowLagrange",
+        });
+        r.Add(new Feature
+        {
+            Id = "constellations", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.constellations",
+            Get = () => _showConstellations,
+            Set = v => { _showConstellations = v; _constellations.Enabled = v; },
+            Default = false, LegacyKey = "ShowConstellations",
+        });
+        r.Add(new Feature
+        {
+            Id = "tidal", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.tidal",
+            Get = () => _showTidalLock, Set = v => _showTidalLock = v, Default = false, LegacyKey = "ShowTidalLock",
+            Banner = v => Localization.T(v ? "ui.tidal.on" : "ui.tidal.off"),
+        });
+        r.Add(new Feature
+        {
+            Id = "alignment", Category = FeatureCategory.Bodies, LabelKey = "ui.settings.alignment",
+            Get = () => _showAlignment, Set = v => _showAlignment = v, Default = true, LegacyKey = "ShowAlignment",
+            Banner = v => Localization.T(v ? "ui.alignment.on" : "ui.alignment.off"),
+        });
+        r.Add(new Command
+        {
+            Id = "focus.sun", Category = FeatureCategory.Bodies, LabelKey = "ui.cmd.focus.sun",
+            Run = () => { _selectedIndex = -1; FocusOn(-1); }, HideInHelp = true,
+        }).WithKey(Keys.D0).WithKey(Keys.KeyPad0);
+        for (int i = 0; i < 8; i++)
+        {
+            int idx = i;
+            r.Add(new Command
+            {
+                Id = "focus." + (i + 1), Category = FeatureCategory.Bodies, LabelKey = "ui.cmd.focus",
+                LabelFn = () => Localization.T("ui.cmd.focus", _planets[idx].Name),
+                Run = () => { FocusOn(idx); _selectedIndex = idx; }, HideInHelp = true,
+            }).WithKey(Keys.D1 + i).WithKey(Keys.KeyPad1 + i);
+        }
+
+        // ---- Effects ---------------------------------------------------------------------
+        r.Add(new Feature
+        {
+            Id = "solarwind", Category = FeatureCategory.Effects, LabelKey = "ui.settings.solarwind",
+            Get = () => _solarWind.Enabled, Set = v => _solarWind.Enabled = v, Default = true, LegacyKey = "SolarWindEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "solarflares", Category = FeatureCategory.Effects, LabelKey = "ui.settings.solarflares",
+            Get = () => _solarFlares.Enabled, Set = v => _solarFlares.Enabled = v, Default = true, LegacyKey = "SolarFlaresEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "corona", Category = FeatureCategory.Effects, LabelKey = "ui.settings.corona",
+            Get = () => _renderer.CoronaEnabled, Set = v => _renderer.CoronaEnabled = v, Default = true, LegacyKey = "CoronaEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "aurora", Category = FeatureCategory.Effects, LabelKey = "ui.settings.aurora",
+            Get = () => _showAurora, Set = v => { _showAurora = v; _aurora.Enabled = v; }, Default = true, LegacyKey = "ShowAurora",
+        });
+        r.Add(new Feature
+        {
+            Id = "atmosphere", Category = FeatureCategory.Effects, LabelKey = "ui.settings.atmosphere",
+            Get = () => _renderer.AtmosphereEnabled, Set = v => _renderer.AtmosphereEnabled = v, Default = true, LegacyKey = "AtmosphereEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "eclipses", Category = FeatureCategory.Effects, LabelKey = "ui.settings.eclipses",
+            Get = () => _renderer.EclipsesEnabled, Set = v => _renderer.EclipsesEnabled = v, Default = true, LegacyKey = "EclipsesEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "pbr", Category = FeatureCategory.Effects, LabelKey = "ui.settings.pbr",
+            Get = () => _renderer.PbrEnabled, Set = v => _renderer.PbrEnabled = v, Default = true, LegacyKey = "PbrEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "oceanmask", Category = FeatureCategory.Effects, LabelKey = "ui.settings.oceanmask",
+            Get = () => _renderer.OceanMaskEnabled, Set = v => _renderer.OceanMaskEnabled = v, Default = true, LegacyKey = "OceanMaskEnabled",
+            Unavailable = () => _planets[2].OceanMaskTextureId == 0 ? "ui.unavailable.texture" : null,
+        });
+
+        // ---- Post-processing -------------------------------------------------------------
+        r.Add(new Feature
+        {
+            Id = "bloom", Category = FeatureCategory.PostFx, LabelKey = "ui.settings.bloom",
+            Get = () => _renderer.BloomEnabled, Set = v => _renderer.BloomEnabled = v, Default = true, LegacyKey = "BloomEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "autoexposure", Category = FeatureCategory.PostFx, LabelKey = "ui.settings.autoexposure",
+            Get = () => _renderer.AutoExposureEnabled, Set = v => _renderer.AutoExposureEnabled = v, Default = true, LegacyKey = "AutoExposureEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "fxaa", Category = FeatureCategory.PostFx, LabelKey = "ui.settings.fxaa",
+            Get = () => _renderer.FxaaEnabled, Set = v => _renderer.FxaaEnabled = v, Default = true, LegacyKey = "FxaaEnabled",
+        });
+        r.Add(new Feature
+        {
+            Id = "lensflare", Category = FeatureCategory.PostFx, LabelKey = "ui.settings.lensflare",
+            Get = () => _renderer.LensFlareEnabled, Set = v => _renderer.LensFlareEnabled = v, Default = true, LegacyKey = "LensFlareEnabled",
+            Banner = v => Localization.T(v ? "ui.lensflare.on" : "ui.lensflare.off"),
+        });
+
+        // ---- Interface -------------------------------------------------------------------
+        r.Add(new Feature
+        {
+            Id = "settings", Category = FeatureCategory.Interface, LabelKey = "ui.settings.settings",
+            Get = () => _settings.Visible, Set = v => _settings.Visible = v, Default = false, LegacyKey = "SettingsVisible",
+            Banner = _ => "",
+        }).WithKey(Keys.F1);
+        r.Add(new Command
+        {
+            Id = "palette", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.palette",
+            Run = () => _palette.Open(_registry), HideInPalette = true,
+        }).WithKey(Keys.K, KeyModifiers.Control);
+        r.Add(new Feature
+        {
+            Id = "toolbar", Category = FeatureCategory.Interface, LabelKey = "ui.settings.toolbar",
+            Get = () => _toolbar.Visible, Set = v => _toolbar.Visible = v, Default = true,
+        });
+        r.Add(new Feature
+        {
+            Id = "hud", Category = FeatureCategory.Interface, LabelKey = "ui.settings.hud",
+            Get = () => _showHud, Set = v => _showHud = v, Default = false, LegacyKey = "ShowHud",
+            Banner = _ => "",
+        }).WithKey(Keys.GraveAccent);
+        r.Add(new Feature
+        {
+            Id = "timeline", Category = FeatureCategory.Interface, LabelKey = "ui.settings.timeline",
+            Get = () => _scrubber.Visible, Set = v => _scrubber.Visible = v, Default = false, LegacyKey = "ScrubberVisible",
+        });
+        r.Add(new Feature
+        {
+            Id = "bookmarks", Category = FeatureCategory.Interface, LabelKey = "ui.settings.bookmarks",
+            Get = () => _bookSidebar.Visible, Set = v => _bookSidebar.Visible = v, Default = false, LegacyKey = "BookmarksVisible",
+            Banner = _ => "",
+        }).WithKey(Keys.F3);
+        r.Add(new Feature
+        {
+            Id = "audio", Category = FeatureCategory.Interface, LabelKey = "ui.settings.audio",
+            Get = () => _audio.Enabled, Set = v => _audio.Enabled = v, Default = false, LegacyKey = "AudioEnabled",
+            Banner = v => { if (v) _audio.PlayTick(); return Localization.T(v ? "ui.audio.on" : "ui.audio.off"); },
+        });
+        r.Add(new Feature
+        {
+            Id = "fullscreen", Category = FeatureCategory.Interface, LabelKey = "ui.settings.fullscreen",
+            Get = () => _fullscreen, Set = SetFullscreen, Default = false, LegacyKey = "Fullscreen",
+            Banner = _ => "", // SetFullscreen raises its own banner.
+        }).WithKey(Keys.Enter, KeyModifiers.Alt);
+        r.Add(new Command
+        {
+            Id = "help", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.help",
+            Run = () => _helpMode = (_helpMode + 1) % 3, ClosesPalette = false, ShowInPanel = true,
+            Status = () => Localization.T("ui.help.mode." + _helpMode),
+        }).WithKey(Keys.Tab);
+        r.Add(new Command
+        {
+            Id = "language", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.language",
+            Run = () => ShowBanner(Localization.T("ui.lang.toggled", Localization.CycleNext())),
+            ClosesPalette = false, ShowInPanel = true,
+            Status = () => Localization.CurrentLanguage.ToUpperInvariant(),
+        }).WithKey(Keys.F2);
+        r.Add(new Command
+        {
+            Id = "search", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.search",
+            Run = () => { _searchActive = true; _searchBuffer = ""; _searchSwallowNextChar = true; },
+        }).WithKey(Keys.F, KeyModifiers.Control);
+        r.Add(new Command
+        {
+            Id = "seek", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.seek",
+            Run = () => { _seekActive = true; _seekBuffer = ""; _seekFeedback = ""; _seekSwallowNextChar = true; },
+        }).WithKey(Keys.J);
+        r.Add(new Command
+        {
+            Id = "screenshot", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.screenshot",
+            Run = SaveScreenshot, ShowInPanel = true,
+        }).WithKey(Keys.F12);
+        r.Add(new Command
+        {
+            Id = "bookmark.next", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.bookmark.next",
+            Run = () => JumpToBookmark(forward: true), ClosesPalette = false,
+        }).WithKey(Keys.E, KeyModifiers.Control);
+        r.Add(new Command
+        {
+            Id = "bookmark.prev", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.bookmark.prev",
+            Run = () => JumpToBookmark(forward: false), ClosesPalette = false,
+        }).WithKey(Keys.E, KeyModifiers.Control | KeyModifiers.Shift);
+        r.Add(new Command
+        {
+            Id = "path.play", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.path.play",
+            Run = () =>
+            {
+                if (_camPath.Play(6.0)) { _audio.PlayWhoosh(); ShowBanner(Localization.T("ui.campath.playing"), 2.5); }
+                else ShowBanner(Localization.T("ui.campath.need2"), 2.5);
+            },
+        }).WithKey(Keys.P, KeyModifiers.Shift);
+        r.Add(new Command
+        {
+            Id = "path.clear", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.path.clear",
+            Run = () => { _camPath.ClearAll(); ShowBanner(Localization.T("ui.campath.cleared"), 2.5); },
+        }).WithKey(Keys.P, KeyModifiers.Control | KeyModifiers.Shift);
+        for (int i = 1; i <= 9; i++)
+        {
+            int slot = i;
+            r.Add(new Command
+            {
+                Id = "waypoint." + i, Category = FeatureCategory.Interface, LabelKey = "ui.cmd.waypoint",
+                LabelFn = () => Localization.T("ui.cmd.waypoint", slot),
+                Run = () =>
+                {
+                    _camPath.Record(slot, _camera);
+                    _audio.PlayTick();
+                    ShowBanner(Localization.T("ui.campath.recorded", slot, _camPath.Count), 2.0);
+                },
+                HideInHelp = true,
+            }).WithKey(Keys.D0 + i, KeyModifiers.Control).WithKey(Keys.KeyPad0 + i, KeyModifiers.Control);
+            r.Add(new Command
+            {
+                Id = "waypoint.clear." + i, Category = FeatureCategory.Interface, LabelKey = "ui.cmd.waypoint.clear",
+                LabelFn = () => Localization.T("ui.cmd.waypoint.clear", slot),
+                Run = () => { _camPath.Clear(slot); ShowBanner(Localization.T("ui.campath.slotcleared", slot), 2.0); },
+                HideInHelp = true, HideInPalette = true,
+            }).WithKey(Keys.D0 + i, KeyModifiers.Control | KeyModifiers.Shift)
+              .WithKey(Keys.KeyPad0 + i, KeyModifiers.Control | KeyModifiers.Shift);
+        }
+        r.Add(new Command
+        {
+            Id = "quit", Category = FeatureCategory.Interface, LabelKey = "ui.cmd.quit",
+            Run = Close, ShowInPanel = true,
+        });
+
+        // ---- Developer -------------------------------------------------------------------
+        r.Add(new Feature
+        {
+            Id = "profiler", Category = FeatureCategory.Developer, LabelKey = "ui.settings.profiler",
+            Get = () => _showProfiler, Set = v => _showProfiler = v, Default = false, LegacyKey = "ShowProfiler",
+            Banner = v => Localization.T(v ? "ui.profiler.on" : "ui.profiler.off"),
+        }).WithKey(Keys.F10);
+        r.Add(new Feature
+        {
+            Id = "hotreload", Category = FeatureCategory.Developer, LabelKey = "ui.settings.hotreload",
+            Get = () => ShaderSources.HotReloadEnabled, Set = ShaderSources.SetHotReload, Default = false, Persist = false,
+            Banner = v => Localization.T(v ? "ui.hotreload.on" : "ui.hotreload.off"),
+        });
+        r.Add(new Feature
+        {
+            Id = "gpubelt", Category = FeatureCategory.Developer, LabelKey = "ui.settings.gpubelt",
+            Get = () => _belt.UseGpuCompute, Set = v => _belt.UseGpuCompute = v, Default = true, LegacyKey = "GpuAsteroidsEnabled",
+            Unavailable = () => _belt.GpuComputeAvailable ? null : "ui.gpubelt.unavailable",
+            Banner = v => Localization.T(v ? "ui.gpubelt.on" : "ui.gpubelt.off"),
+        });
+        r.Add(new Feature
+        {
+            Id = "record", Category = FeatureCategory.Developer, LabelKey = "ui.settings.record",
+            Get = () => _recording, Set = v => { if (v != _recording) ToggleRecording(); }, Default = false, Persist = false,
+            Banner = _ => "", // ToggleRecording raises its own banners.
+        }).WithKey(Keys.F9);
+
+        // ---- Presets (scene categories only; see FeatureRegistry.ApplyPreset) ----------
+        r.AddPreset(new FeaturePreset
+        {
+            Id = "cinematic", LabelKey = "ui.preset.cinematic",
+            Overrides = new()
+            {
+                ["orbits"] = false, ["labels"] = false, ["probes"] = false, ["alignment"] = false,
+                ["trails"] = true, ["meteors"] = true,
+            },
+        });
+        r.AddPreset(new FeaturePreset
+        {
+            Id = "realistic", LabelKey = "ui.preset.realistic",
+            Overrides = new()
+            {
+                ["realscale"] = true, ["lighttime"] = true, ["nbody"] = true,
+                ["trails"] = false, ["solarwind"] = false, ["solarflares"] = false,
+                ["lensflare"] = false, ["alignment"] = false,
+            },
+        });
+        r.AddPreset(new FeaturePreset
+        {
+            Id = "performance", LabelKey = "ui.preset.performance",
+            Overrides = new()
+            {
+                ["bloom"] = false, ["fxaa"] = false, ["autoexposure"] = false, ["lensflare"] = false,
+                ["aurora"] = false, ["solarwind"] = false, ["solarflares"] = false, ["corona"] = false,
+                ["pbr"] = false, ["atmosphere"] = false, ["eclipses"] = false, ["oceanmask"] = false,
+                ["meteors"] = false, ["nbody"] = false, ["trails"] = false, ["probes"] = false,
+            },
+        });
+        r.AddPreset(new FeaturePreset
+        {
+            Id = "minimal", LabelKey = "ui.preset.minimal",
+            Overrides = new()
+            {
+                ["trails"] = false, ["dwarfs"] = false, ["probes"] = false, ["alignment"] = false,
+                ["meteors"] = false,
+                ["solarwind"] = false, ["solarflares"] = false, ["corona"] = false, ["aurora"] = false,
+                ["atmosphere"] = false, ["eclipses"] = false, ["pbr"] = false, ["oceanmask"] = false,
+                ["bloom"] = false, ["autoexposure"] = false, ["fxaa"] = false, ["lensflare"] = false,
+            },
+        });
+    }
+
+    /// <summary>Multiply the simulation speed magnitude, keeping direction.
+    /// Clamped to [0.1, 1000] d/s.</summary>
+    private void ScaleSpeed(double factor)
+    {
+        double sign = _daysPerSecond < 0 ? -1.0 : 1.0;
+        double mag = Math.Clamp(Math.Abs(_daysPerSecond) * factor, 0.1, 1000.0);
+        _daysPerSecond = sign * mag;
+    }
+
+    /// <summary>Force playback direction; magnitude is preserved so toggling
+    /// direction doesn't change speed. Trails are cleared on a reversal so
+    /// they don't draw a stale arc.</summary>
+    private void SetDirection(bool backward)
+    {
+        if (backward && _daysPerSecond > 0) ClearAllTrails();
+        if (!backward && _daysPerSecond < 0) ClearAllTrails();
+        _daysPerSecond = backward ? -Math.Abs(_daysPerSecond) : Math.Abs(_daysPerSecond);
+    }
+
+    /// <summary>S12 / Q8: snap sim time to the next (or previous) bookmark.</summary>
+    private void JumpToBookmark(bool forward)
+    {
+        var entry = forward ? _bookmarks.Next(_simDays) : _bookmarks.Prev(_simDays);
+        if (entry is { } ev)
+        {
+            _simDays = Bookmarks.ToSimDays(ev);
+            ClearAllTrails();
+            _audio.PlayTick();
+            ShowBanner($"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}", 4.0);
+        }
+    }
+
+    /// <summary>Q12: build the settings panel rows from the registry. Toggle rows
+    /// mirror every <see cref="Feature"/> (grouped by category tab, hotkey shown
+    /// on the right, description in the footer); a speed slider heads the
+    /// Simulation tab and a few commands flagged <see cref="Command.ShowInPanel"/>
+    /// appear as button rows.</summary>
     private void BuildSettingsPanel()
     {
-        // Labels are localisation keys resolved by SettingsPanel.Draw at render time
-        // so the F2 language toggle re-translates them without rebuilding the panel.
         _settings.Clear();
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.orbits",        Get = () => _showOrbits,        Toggle = () => _showOrbits = !_showOrbits });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.trails",        Get = () => _showTrails,        Toggle = () => { _showTrails = !_showTrails; if (!_showTrails) ClearAllTrails(); } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.labels",        Get = () => _showLabels,        Toggle = () => _showLabels = !_showLabels });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.axes",          Get = () => _showAxes,          Toggle = () => _showAxes = !_showAxes });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.dwarfs",        Get = () => _showDwarfs,        Toggle = () => _showDwarfs = !_showDwarfs });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.constellations",Get = () => _showConstellations,Toggle = () => { _showConstellations = !_showConstellations; _constellations.Enabled = _showConstellations; } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.probes",        Get = () => _showProbes,        Toggle = () => _showProbes = !_showProbes });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lagrange",      Get = () => _showLagrange,      Toggle = () => _showLagrange = !_showLagrange });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.meteors",       Get = () => _showMeteors,       Toggle = () => _showMeteors = !_showMeteors });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.aurora",        Get = () => _showAurora,        Toggle = () => { _showAurora = !_showAurora; _aurora.Enabled = _showAurora; } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.solarwind",     Get = () => _solarWind.Enabled, Toggle = () => _solarWind.Enabled = !_solarWind.Enabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.solarflares",   Get = () => _solarFlares.Enabled, Toggle = () => _solarFlares.Enabled = !_solarFlares.Enabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.bloom",         Get = () => _renderer.BloomEnabled, Toggle = () => _renderer.BloomEnabled = !_renderer.BloomEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.fxaa",          Get = () => _renderer.FxaaEnabled,  Toggle = () => _renderer.FxaaEnabled = !_renderer.FxaaEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.pbr",           Get = () => _renderer.PbrEnabled,   Toggle = () => _renderer.PbrEnabled = !_renderer.PbrEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.audio",         Get = () => _audio.Enabled,      Toggle = () => _audio.Enabled = !_audio.Enabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.timeline",      Get = () => _scrubber.Visible,   Toggle = () => _scrubber.Visible = !_scrubber.Visible });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.tidal",         Get = () => _showTidalLock,    Toggle = () => _showTidalLock = !_showTidalLock });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.alignment",     Get = () => _showAlignment,    Toggle = () => _showAlignment = !_showAlignment });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.nbody",         Get = () => _nbodyEnabled,     Toggle = () => { _nbodyEnabled = !_nbodyEnabled; if (_nbodyEnabled) _nbodyDirty = true; } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.lensflare",     Get = () => _renderer.LensFlareEnabled, Toggle = () => _renderer.LensFlareEnabled = !_renderer.LensFlareEnabled });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.gpubelt",       Get = () => _belt.UseGpuCompute,        Toggle = () => { if (_belt.GpuComputeAvailable) _belt.UseGpuCompute = !_belt.UseGpuCompute; } });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.profiler",      Get = () => _showProfiler,              Toggle = () => _showProfiler = !_showProfiler });
-        _settings.Add(new SettingsPanel.ToggleRow { Label = "ui.settings.fullscreen",    Get = () => _fullscreen,                Toggle = ToggleFullscreen });
-        _settings.Add(new SettingsPanel.SliderRow {
+        _settings.Add(new SettingsPanel.SliderRow
+        {
             Label  = "ui.settings.speed",
+            Category = FeatureCategory.Simulation,
             Get    = () => (float)_daysPerSecond,
             Set    = v => _daysPerSecond = v,
-            Min    = -1000f, Max = 1000f, Step = 1f, Format = "{0:0.##}"
+            Min    = -1000f, Max = 1000f, Step = 1f, Format = "{0:0.##}",
+            Description = () => Localization.T("ui.desc.speed"),
+        });
+        foreach (var e in _registry.Entries)
+        {
+            switch (e)
+            {
+                case Feature f:
+                    _settings.Add(new SettingsPanel.ToggleRow
+                    {
+                        Label = f.LabelKey,
+                        Category = f.Category,
+                        Hint = f.BindingText,
+                        Get = () => f.Value,
+                        Toggle = () => _registry.Invoke(f, ShowBanner),
+                        Description = () => f.Description,
+                        Unavailable = f.Unavailable,
+                    });
+                    break;
+                case Command c when c.ShowInPanel:
+                    _settings.Add(new SettingsPanel.ButtonRow
+                    {
+                        Label = c.LabelKey,
+                        Category = c.Category,
+                        Hint = c.BindingText,
+                        Run = () => _registry.Invoke(c, ShowBanner),
+                        Status = c.Status,
+                        Description = () => c.Description,
+                        Unavailable = c.Unavailable,
+                    });
+                    break;
+            }
+        }
+        _settings.Presets = _registry.Presets;
+        _settings.IsPresetActive = _registry.MatchesPreset;
+        _settings.OnPreset = p =>
+        {
+            _registry.ApplyPreset(p);
+            ShowBanner(Localization.T("ui.preset.applied", p.Label), 2.0);
+        };
+        _settings.OnReset = c => _registry.ResetCategory(c);
+        _settings.OnSetAll = (c, v) => _registry.SetCategory(c, v);
+    }
+
+    /// <summary>Bottom-centre strip: pause, speed, direction, the four view
+    /// toggles people reach for most, and the two menus.</summary>
+    private void BuildToolbar()
+    {
+        _toolbar.Clear();
+        Toolbar.Button FeatureButton(string id, Func<string>? label = null)
+        {
+            var f = _registry.FindFeature(id)!;
+            return new Toolbar.Button
+            {
+                Label = label ?? (() => f.Label),
+                Click = () => _registry.Invoke(f, ShowBanner),
+                Active = () => f.Value,
+                Tip = () => f.BindingText.Length > 0 ? $"{f.Description}  [{f.BindingText}]" : f.Description,
+            };
+        }
+        _toolbar.Add(FeatureButton("pause", () => _paused ? "▶" : "▮▮"));
+        _toolbar.Buttons[^1].MinWidth = 40f;
+        _toolbar.Add(new Toolbar.Button
+        {
+            Label = () => "-", MinWidth = 32f,
+            Click = () => ScaleSpeed(1.0 / 1.5),
+            Tip = () => Localization.T("ui.desc.speed.down"),
+        });
+        _toolbar.Add(new Toolbar.Button
+        {
+            Label = () => $"{(_daysPerSecond < 0 ? "◀ " : "")}{Math.Abs(_daysPerSecond):0.##} d/s", MinWidth = 90f,
+            Click = () => _daysPerSecond = _daysPerSecond < 0 ? -1.0 : 1.0,
+            Tip = () => Localization.T("ui.toolbar.speed.tip"),
+        });
+        _toolbar.Add(new Toolbar.Button
+        {
+            Label = () => "+", MinWidth = 32f,
+            Click = () => ScaleSpeed(1.5),
+            Tip = () => Localization.T("ui.desc.speed.up"),
+        });
+        _toolbar.Add(new Toolbar.Button
+        {
+            Label = () => _daysPerSecond < 0 ? "◀◀" : "▶▶", MinWidth = 40f,
+            Click = () => SetDirection(backward: _daysPerSecond > 0),
+            Active = () => _daysPerSecond < 0,
+            Tip = () => Localization.T("ui.toolbar.direction.tip"),
+        });
+        _toolbar.Add(FeatureButton("orbits"));
+        _toolbar.Add(FeatureButton("labels"));
+        _toolbar.Add(FeatureButton("trails"));
+        _toolbar.Add(FeatureButton("realscale"));
+        _toolbar.Add(FeatureButton("settings", () => Localization.T("ui.toolbar.settings")));
+        _toolbar.Add(new Toolbar.Button
+        {
+            Label = () => Localization.T("ui.toolbar.commands"),
+            Click = () => _palette.Open(_registry),
+            Active = () => _palette.Active,
+            Tip = () => Localization.T("ui.desc.palette") + "  [Ctrl+K]",
         });
     }
 
@@ -2314,6 +2641,11 @@ public sealed class SolarSystemWindow : GameWindow
 
     // A11: was private; promoted to internal so SolarSystemJsonContext (the
     // System.Text.Json source-generated context) can reference the type.
+    /// <summary>On-disk layout of <c>state.json</c>. Every boolean toggle lives in
+    /// <see cref="Features"/> (id → value, produced by <see cref="FeatureRegistry.Snapshot"/>);
+    /// only the non-boolean bits keep dedicated properties. Saves written by the
+    /// pre-registry layout (one PascalCase bool per toggle) are migrated on load
+    /// via <see cref="FeatureRegistry.MigrateLegacy"/>.</summary>
     internal sealed class PersistedState
     {
         public float Yaw { get; set; }
@@ -2323,54 +2655,12 @@ public sealed class SolarSystemWindow : GameWindow
         public float TargetY { get; set; }
         public float TargetZ { get; set; }
         public double DaysPerSecond { get; set; } = 1.0;
-        public bool Paused { get; set; }
         public double SimDays { get; set; }
         public int FocusIndex { get; set; } = -1;
-        public bool ShowOrbits { get; set; } = true;
-        public bool ShowAxes { get; set; }
-        public bool ShowLabels { get; set; } = true;
-        public bool ShowTrails { get; set; } = true;
-        public bool ShowDwarfs { get; set; } = true;
-        public bool ShowConstellations { get; set; }
-        public bool ShowHud { get; set; }
-        public bool SolarWindEnabled { get; set; } = true;
-        public bool SolarFlaresEnabled { get; set; } = true;
-        public bool RealScale { get; set; }
-        public bool LightTime { get; set; }
-        // S9–S11 toggles.
-        public bool ShowProbes { get; set; } = true;
-        public bool ShowLagrange { get; set; }
-        public bool ShowMeteors { get; set; } = true;
-        // V1/V8/V9/V10/V11 post-FX toggles.
-        public bool BloomEnabled { get; set; } = true;
-        public bool EclipsesEnabled { get; set; } = true;
-        public bool AtmosphereEnabled { get; set; } = true;
-        public bool AutoExposureEnabled { get; set; } = true;
-        public bool FxaaEnabled { get; set; } = true;
-        // V12/V13/V14/V15.
-        public bool CoronaEnabled { get; set; } = true;
-        public bool ShowAurora { get; set; } = true;
-        public bool PbrEnabled { get; set; } = true;
-        public bool OceanMaskEnabled { get; set; } = true;
-        // Q9 / Q12 / Q14 / Q15 / Q13 / Q8.
-        public bool ScrubberVisible { get; set; }
-        public bool SettingsVisible { get; set; }
-        public bool BookmarksVisible { get; set; }
         public int  HelpMode { get; set; }
-        public bool AudioEnabled { get; set; }
         public string Language { get; set; } = "en";
-        // S13 / S14 / S15 toggles.
-        public bool ShowTidalLock { get; set; }
-        public bool ShowAlignment { get; set; } = true;
-        public bool NBodyEnabled { get; set; }
-        // V6: screen-space lens-flare ghosts along the Sun-through-centre axis.
-        public bool LensFlareEnabled { get; set; } = true;
-        // A8: GPU compute path for the asteroid belt's Kepler solve.
-        public bool GpuAsteroidsEnabled { get; set; } = true;
-        // Alt+Enter borderless fullscreen toggle.
-        public bool Fullscreen { get; set; }
-        // A12: per-frame profiler overlay (F10).
-        public bool ShowProfiler { get; set; }
+        public FeatureCategory SettingsTab { get; set; } = FeatureCategory.Bodies;
+        public Dictionary<string, bool>? Features { get; set; }
     }
 
     private void TryLoadPersistedState()
@@ -2383,9 +2673,23 @@ public sealed class SolarSystemWindow : GameWindow
             var s = JsonSerializer.Deserialize(json, SolarSystemJsonContext.Default.PersistedState);
             if (s == null) return;
 
-            // RealScale must be applied first so VisualRadii and camera limits are
-            // already correct when we restore the camera distance below.
-            if (s.RealScale != OrbitalMechanics.RealScale) ToggleRealScale();
+            Dictionary<string, bool> toggles;
+            if (s.Features != null)
+            {
+                toggles = s.Features;
+            }
+            else
+            {
+                // Pre-registry save: pick the old per-toggle properties straight
+                // out of the raw document so the DTO doesn't have to carry them.
+                using var doc = JsonDocument.Parse(json);
+                toggles = _registry.MigrateLegacy(doc.RootElement);
+                Debug.WriteLine($"[state] migrated {toggles.Count} legacy toggle(s)");
+            }
+
+            // Toggles first: real-scale is registered first, so VisualRadii and
+            // camera limits are already correct when we clamp Distance below.
+            _registry.Restore(toggles);
 
             _camera.Yaw = s.Yaw;
             _camera.Pitch = s.Pitch;
@@ -2393,51 +2697,11 @@ public sealed class SolarSystemWindow : GameWindow
             _camera.Target = new Vector3(s.TargetX, s.TargetY, s.TargetZ);
 
             _daysPerSecond = s.DaysPerSecond;
-            _paused = s.Paused;
             _simDays = s.SimDays;
             _focusIndex = s.FocusIndex;
-            _showOrbits = s.ShowOrbits;
-            _showAxes = s.ShowAxes;
-            _showLabels = s.ShowLabels;
-            _showTrails = s.ShowTrails;
-            _showDwarfs = s.ShowDwarfs;
-            _showConstellations = s.ShowConstellations;
-            _constellations.Enabled = _showConstellations;
-            _showHud = s.ShowHud;
-            _solarWind.Enabled = s.SolarWindEnabled;
-            _solarFlares.Enabled = s.SolarFlaresEnabled;
-            _lightTime = s.LightTime;
-
-            _showProbes = s.ShowProbes;
-            _showLagrange = s.ShowLagrange;
-            _showMeteors = s.ShowMeteors;
-
-            _renderer.BloomEnabled = s.BloomEnabled;
-            _renderer.EclipsesEnabled = s.EclipsesEnabled;
-            _renderer.AtmosphereEnabled = s.AtmosphereEnabled;
-            _renderer.AutoExposureEnabled = s.AutoExposureEnabled;
-            _renderer.FxaaEnabled = s.FxaaEnabled;
-            _renderer.CoronaEnabled = s.CoronaEnabled;
-            _renderer.PbrEnabled = s.PbrEnabled;
-            _renderer.OceanMaskEnabled = s.OceanMaskEnabled;
-            _showAurora = s.ShowAurora;
-            _aurora.Enabled = _showAurora;
-
-            _scrubber.Visible = s.ScrubberVisible;
-            _settings.Visible = s.SettingsVisible;
-            _bookSidebar.Visible = s.BookmarksVisible;
             _helpMode = Math.Clamp(s.HelpMode, 0, 2);
-            _audio.Enabled = s.AudioEnabled;
+            _settings.ActiveTab = Enum.IsDefined(s.SettingsTab) ? s.SettingsTab : FeatureCategory.Bodies;
             if (!string.IsNullOrEmpty(s.Language)) Localization.SetLanguage(s.Language);
-
-            _showTidalLock = s.ShowTidalLock;
-            _showAlignment = s.ShowAlignment;
-            _nbodyEnabled = s.NBodyEnabled;
-            if (_nbodyEnabled) _nbodyDirty = true;
-            _renderer.LensFlareEnabled = s.LensFlareEnabled;
-            _belt.UseGpuCompute = s.GpuAsteroidsEnabled;
-            SetFullscreen(s.Fullscreen);
-            _showProfiler = s.ShowProfiler;
 
             Debug.WriteLine($"[state] loaded from {StateFilePath}");
         }
@@ -2460,45 +2724,12 @@ public sealed class SolarSystemWindow : GameWindow
                 TargetY = _camera.Target.Y,
                 TargetZ = _camera.Target.Z,
                 DaysPerSecond = _daysPerSecond,
-                Paused = _paused,
                 SimDays = _simDays,
                 FocusIndex = _focusIndex,
-                ShowOrbits = _showOrbits,
-                ShowAxes = _showAxes,
-                ShowLabels = _showLabels,
-                ShowTrails = _showTrails,
-                ShowDwarfs = _showDwarfs,
-                ShowConstellations = _showConstellations,
-                ShowHud = _showHud,
-                SolarWindEnabled = _solarWind.Enabled,
-                SolarFlaresEnabled = _solarFlares.Enabled,
-                RealScale = OrbitalMechanics.RealScale,
-                LightTime = _lightTime,
-                ShowProbes = _showProbes,
-                ShowLagrange = _showLagrange,
-                ShowMeteors = _showMeteors,
-                BloomEnabled = _renderer.BloomEnabled,
-                EclipsesEnabled = _renderer.EclipsesEnabled,
-                AtmosphereEnabled = _renderer.AtmosphereEnabled,
-                AutoExposureEnabled = _renderer.AutoExposureEnabled,
-                FxaaEnabled = _renderer.FxaaEnabled,
-                CoronaEnabled = _renderer.CoronaEnabled,
-                ShowAurora = _showAurora,
-                PbrEnabled = _renderer.PbrEnabled,
-                OceanMaskEnabled = _renderer.OceanMaskEnabled,
-                ScrubberVisible = _scrubber.Visible,
-                SettingsVisible = _settings.Visible,
-                BookmarksVisible = _bookSidebar.Visible,
                 HelpMode = _helpMode,
-                AudioEnabled = _audio.Enabled,
                 Language = Localization.CurrentLanguage,
-                ShowTidalLock = _showTidalLock,
-                ShowAlignment = _showAlignment,
-                NBodyEnabled = _nbodyEnabled,
-                LensFlareEnabled = _renderer.LensFlareEnabled,
-                GpuAsteroidsEnabled = _belt.UseGpuCompute,
-                Fullscreen = _fullscreen,
-                ShowProfiler = _showProfiler,
+                SettingsTab = _settings.ActiveTab,
+                Features = _registry.Snapshot(),
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

@@ -19,9 +19,9 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **Major moons** — Earth's Moon plus the Galileans (Io, Europa, Ganymede, Callisto) and Titan, each on its own circular inclined orbit around its host planet.
 - **Asteroid belt** — 8000 rocks with precomputed Keplerian elements, advanced per frame by a Newton-Raphson Kepler solve, rendered as additively-blended `GL_POINTS`.
 - **Comet catalogue** — a data-driven set of real comets (Halley, Hale–Bopp, NEOWISE, Encke) loaded from `data/comets.json`, each with its own orbit polyline and CPU-particle ion/dust tail that ignites near perihelion (intensity ∝ 1/r).
-- **Tidal-lock arrows** (`F4`) — additive arrow on every spin-locked moon (Earth's Moon, Galileans, Titan) pointing at its host, visualising permanent near-side orientation.
-- **Planetary alignment indicator** (`F5`) — union-find over heliocentric longitudes flags every group of ≥3 majors within ~12°; a glowing line links them and a top-right banner names the participants.
-- **N-body perturbation mode** (`F6`) — optional kick-drift-kick leapfrog integrator with mutual gravity between the eight majors (Sun fixed at origin), so e.g. Jupiter’s pull on Mars is visible over decadal time-scales. Resyncs from analytic Kepler on date jumps.
+- **Tidal-lock arrows** — additive arrow on every spin-locked moon (Earth's Moon, Galileans, Titan) pointing at its host, visualising permanent near-side orientation.
+- **Planetary alignment indicator** — union-find over heliocentric longitudes flags every group of ≥3 majors within ~12°; a glowing line links them and a top-right banner names the participants.
+- **N-body perturbation mode** — optional kick-drift-kick leapfrog integrator with mutual gravity between the eight majors (Sun fixed at origin), so e.g. Jupiter’s pull on Mars is visible over decadal time-scales. Resyncs from analytic Kepler on date jumps.
 - **Axial rotation & tilt**, including retrograde spin for Venus/Uranus.
 - **Data-driven** — planet & dwarf elements live in `data/planets.json` (with comments + trailing commas); the built-in tables are a fallback.
 
@@ -54,10 +54,11 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **Name search** — `Ctrl+F` opens a modal prompt with live prefix/substring matching across every focusable body.
 - **Date seek** — press `J` to jump to an absolute `YYYY-MM-DD` or a signed delta in days (`+30`, `-365`).
 - **Time control** — variable simulation speed, pause (`Space`), forward / backward direction (`,` / `.`).
-- **Light-time toggle** (`Y`) — delays each planet's spin angle by `r/c` so the day/night terminator falls where the photons currently illuminating it left the Sun (~2° at Earth, ~90° at Neptune).
-- **Screenshot** (`F12`, Windows) saves a PNG of the post-bloom composite to `screenshots/`.
+- **Light-time toggle** — delays each planet's spin angle by `r/c` so the day/night terminator falls where the photons currently illuminating it left the Sun (~2° at Earth, ~90° at Neptune).
+- **Screenshot** (`F12`) saves a PNG of the post-bloom composite to `screenshots/`.
 - **HUD overlay** (`~`) shows FPS, scale mode, and live particle / asteroid counts.
-- **Persisted UI state** — camera, sim time, every toggle and the scale mode round-trip via `%AppData%/SolarSystem/state.json`.
+- **Persisted UI state** — camera, sim time and every registry toggle (`Features: {id: bool}`) round-trip via `%AppData%/SolarSystem/state.json`; pre-registry saves are migrated automatically.
+- **Feature registry** — one list (`FeatureRegistry`) drives the F1 settings panel (tabs, presets, hotkey hints, descriptions), the `Ctrl+K` command palette, the bottom toolbar, the generated help overlay, `data/keybindings.json` overrides and `state.json`.
 - **Focus cycling** with number keys; orbiting / panning / zoom with the mouse.
 
 > 📍 Looking for what's coming next? See **[ROADMAP.md](ROADMAP.md)** for planned features and improvement ideas.
@@ -66,53 +67,57 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 
 ## 🎮 Controls
 
+Every toggle and command lives in one **feature registry** (`FeatureRegistry.cs`), and three
+mouse-first surfaces are generated from it — so you never have to memorise a key:
+
+- **F1 — Settings panel.** Six tabs (Bodies · Simulation · Effects · Post-FX · Interface · Developer),
+  every switch as a checkbox with its hotkey on the right and a one-line description in the footer.
+  Scene tabs also carry **presets** (Cinematic / Realistic / Performance / Minimal) plus
+  *Reset tab* / *All on* / *All off*. `←` `→` switch tabs, `Esc` closes.
+- **Ctrl+K — Command palette.** Type any part of a setting or command name (`aur` → *Aurora*,
+  `screen` → *Screenshot*, `focus ma` → *Focus: Mars*), `Enter` toggles / runs, `Esc` closes.
+- **Bottom toolbar.** Pause, speed ±, direction, Orbits / Labels / Trails / Real scale, and buttons
+  for the two menus. Hide it from Interface → Toolbar.
+
+Only the essentials keep a default key. Everything else is reachable from the panel or the palette,
+and any id can be (re)bound in **`data/keybindings.json`** (chords like `Ctrl+Shift+P`, `F4`, `~`, `Num1`;
+the file ships with the old single-letter layout commented out for anyone who wants it back).
+
 | Input | Action |
 |---|---|
 | **LMB drag** | Orbit camera around target |
 | **MMB drag** | Pan target |
-| **Mouse wheel** | Zoom |
+| **Mouse wheel** | Zoom (scrolls the settings panel when the cursor is over it) |
 | **LMB click** | Select body (shows info panel) |
 | **LMB double-click body** | Focus camera on body (smooth 0.5 s transition) |
 | **LMB double-click empty space** | Stop following (free camera) |
-| **0** / **Numpad 0** | Reset to Sun view |
-| **1 – 8** | Focus Mercury … Neptune |
-| **+ / =** | Speed up time (×1.5, capped at 1000 d/s) |
-| **− / _** | Slow down time (÷1.5, floor 0.1 d/s) |
+| **F1** | Settings panel |
+| **Ctrl+K** | Command palette |
+| **Tab** | Cycle help overlay: full → minimal → hidden |
 | **Space** | Pause / resume |
+| **+ / −** | Speed up / slow down time (×1.5 steps, 0.1 … 1000 d/s) |
 | **,** / **.** | Play backward / forward (magnitude preserved) |
-| **J** | Open date-seek prompt (`YYYY-MM-DD` or `±days`); `Esc` cancels |
-| **O** | Toggle orbit lines |
-| **T** | Toggle planet trails |
-| **L** | Toggle labels |
-| **A** | Toggle planet axis lines |
-| **W** | Toggle solar wind |
-| **F** | Toggle solar flares |
-| **C** | Toggle constellation overlay |
+| **0** / **1 – 8** | Focus the Sun / Mercury … Neptune (numpad works too) |
+| **O** / **L** / **T** | Toggle orbit lines / labels / planet trails |
 | **R** | Toggle real-scale mode (km-derived radii + log depth) |
-| **D** | Toggle dwarf planets |
-| **Y** | Toggle light-time delay (`simDays − r/c` for spin) |
+| **J** | Date-seek prompt (`YYYY-MM-DD` or `±days`) |
 | **Ctrl+F** | Search bodies by name |
-| **F12** | Screenshot to `screenshots/` (Windows) |
-| **~** | Toggle FPS / particle-count HUD |
-| **U** | Toggle sun corona / granulation (V12) |
-| **K** | Toggle polar aurora ribbons (V13) |
-| **I** | Toggle PBR planet shading (V14) |
-| **Q** | Toggle ocean specular mask (V15) |
-| **V** | Toggle bottom timeline scrubber (Q9) |
-| **Ctrl + 1‥9** | Record camera waypoint (Q10); add **Shift** to clear that slot |
-| **Shift + P** | Play recorded camera path (Catmull-Rom flythrough); **Ctrl + Shift + P** clears all |
-| **F1** | Toggle in-app settings panel (Q12) |
-| **F2** | Cycle UI language (Q13) — drops `data/lang.<code>.json` are auto-detected |
-| **F4** | Toggle tidal-lock arrows on locked moons (S13) |
-| **F5** | Toggle heliocentric-alignment indicator (S14) |
-| **F6** | Toggle N-body perturbation mode (S15) |
-| **F7** | Toggle GLSL hot-reload (A6) — edits to `Resources/Shaders/*.glsl` live-reload |
-| **F8** | Toggle GPU compute path for the asteroid belt (A8) |
-| **Alt + Enter** | Toggle borderless fullscreen — also exposed as a row in the F1 settings panel |
-| **Tab** | Cycle help overlay: full → minimal → hidden (Q14) |
-| **S** | Toggle audio cues (Q15) |
-| **Ctrl + Shift + B** | Step **back** through the eclipse / transit calendar (Q8 / S12) |
-| **Esc** | Quit |
+| **Ctrl+E** / **Ctrl+Shift+E** | Next / previous eclipse-transit bookmark |
+| **F3** | Bookmarks sidebar |
+| **Ctrl+1‥9** / **Ctrl+Shift+1‥9** | Record / clear a camera waypoint |
+| **Shift+P** / **Ctrl+Shift+P** | Play / clear the camera path |
+| **F2** | Cycle UI language — dropped `data/lang.<code>.json` files are auto-detected |
+| **F9** | Start / stop video recording (ffmpeg) |
+| **F10** | Per-pass profiler overlay |
+| **F12** | Screenshot to `screenshots/` |
+| **~** | FPS / particle-count HUD |
+| **Alt+Enter** | Borderless fullscreen |
+| **Esc** | Close the open panel / prompt; on an empty screen press **twice** within 2 s to quit |
+
+Unbound by default (F1 panel · Ctrl+K · `keybindings.json`): axes, dwarf planets, probes, Lagrange
+points, constellations, tidal-lock arrows, alignment indicator, meteor showers, light-time delay,
+N-body gravity, solar wind, solar flares, sun corona, aurora, atmosphere, eclipses, PBR, ocean specular,
+bloom, auto-exposure, FXAA, lens flare, timeline scrubber, audio cues, GLSL hot-reload, GPU asteroid belt.
 
 ---
 

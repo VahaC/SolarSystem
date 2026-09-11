@@ -36,7 +36,7 @@ This document is a detailed, feature-by-feature reference of everything the Sola
 ### Smooth focus transitions + planet trails
 - **What it is:** when you double-click or use number keys to focus a body, the camera smoothly slides toward it instead of snapping; each planet leaves a fading "comet trail" of its recent positions.
 - **What it shows:** a 0.5-second smoothstep lerp on `Camera.Target` and `Camera.Distance` (tracking the body's live position en route), and a 200-sample ring buffer per planet rasterised as a per-vertex-alpha-fading `LineStrip`.
-- **Toggle (trails):** `T`. Trails auto-clear on direction reverse and on scale-mode toggle.
+- **Toggle (trails):** `T` or F1 → Bodies → *Trails*. Trails auto-clear on direction reverse and on scale-mode toggle.
 
 ### Logarithmic depth + minimum-pixel dots
 - **What it is:** a fix for real-scale mode (R1 / R2). Without this, real-scale's astronomical near/far ratio causes z-fighting and tiny planets vanish below 1 px.
@@ -102,22 +102,22 @@ See [Top-tier visual features → Bloom](#bloom--hdr-glow).
 
 ### V12 — Sun corona / surface granulation
 - **What:** `sun.frag.glsl` adds a 4-octave fbm of `normalize(vNormal)*4 + (0, t*0.04, 0)` driving a per-fragment pulse and a hot/cool tint, so granules ripple across the disc and never align with the texture seam.
-- **Toggle:** `U` (`Renderer.CoronaEnabled`, persisted).
+- **Toggle:** F1 → Effects → *Sun corona* (`corona`; `Renderer.CoronaEnabled`, persisted).
 
 ### V13 — Aurora at Earth & Jupiter poles
 - **What:** 128-segment triangle-strip ribbons between latitude bands 72°–80°, with curtain waves (`sin(angle*6 + t*0.8) + sin(angle*13 - t*1.3)`) and shimmer; rendered additively so they feed bloom.
 - **Colours:** Earth = cool green; Jupiter = magenta/violet. Intensity halves when solar wind is off.
-- **Toggle:** `K` (persisted).
+- **Toggle:** F1 → Effects → *Aurora* (`aurora`, persisted).
 
 ### V14 — PBR planet shading
 - **What:** Cook-Torrance with GGX (`D`), Schlick-GGX geometry (`G`), Schlick Fresnel (`F`) over `F0 = mix(0.04, base, metallic)`. Energy-conserving diffuse via `kd = (1-F)(1-metallic)`. Per-body roughness/metallic in `Renderer.GetPbr`.
 - **Fallback:** legacy Phong when `uPbrEnabled = 0`.
-- **Toggle:** `I` (`Renderer.PbrEnabled`, persisted).
+- **Toggle:** F1 → Effects → *PBR* (`pbr`; `Renderer.PbrEnabled`, persisted).
 
 ### V15 — Specular ocean mask (Earth)
 - **What:** specular term is multiplied by an ocean-mask red channel so only oceans glint and continents stay matte.
 - **Asset:** `textures/8k_earth_specular_map.{png,jpg,tif}`.
-- **Toggle:** `Q` (`Renderer.OceanMaskEnabled`, persisted).
+- **Toggle:** F1 → Effects → *Ocean specular* (`oceanmask`; `Renderer.OceanMaskEnabled`, persisted; greyed out when the texture is missing).
 
 ---
 
@@ -133,7 +133,7 @@ See [Top-tier visual features → Bloom](#bloom--hdr-glow).
 
 ### S2 — Planet trails
 - **What:** 200-sample ring buffer per planet rendered as a fading `LineStrip` (alpha quadratic in age).
-- **Toggle:** `T`. Auto-clears on direction reverse and on scale toggle.
+- **Toggle:** `T` (or F1 → Bodies → *Trails*). Auto-clears on direction reverse and on scale toggle.
 
 ### S3 — Asteroid belt
 - **What:** 8 000 asteroids with precomputed Keplerian elements + perifocal→world basis (ecliptic→GL swap folded in). Each frame each rock advances via Newton-Raphson Kepler solve and renders as additively-blended instanced quad with logarithmic depth.
@@ -162,24 +162,24 @@ See [Top-tier visual features → Bloom](#bloom--hdr-glow).
 ### S8 — Constellation overlay
 - **What:** RA/Dec line endpoints from `data/constellations.json`, drawn skybox-style on the celestial sphere at infinity (translation stripped from view matrix + `gl_Position.z = w`). Names rendered via `BitmapFont` anchored to `camera.Eye + dir * R`.
 - **Ships:** Orion, Ursa Major, Cassiopeia, Cygnus, Lyra, Crux, Scorpius, Leo.
-- **Toggle:** `C`.
+- **Toggle:** F1 → Bodies → *Constellations* (`constellations`).
 
 ### S9 — Spacecraft & probes
 - **What:** Voyager 1, Voyager 2, JWST and ISS as additive 3-axis crosses with bitmap-font labels.
   - Voyagers: fixed escape direction + linear AU/yr drift from launch.
   - JWST: parked anti-Sun of Earth at the Sun–Earth L2 distance.
   - ISS: 92.68-min circular Earth orbit at 6 778 km (real-scale) or `Earth.VisualRadius * 1.3` (compressed).
-- **Toggle:** `P`.
+- **Toggle:** F1 → Bodies → *Probes* (`probes`).
 
 ### S10 — Lagrange points
 - **What:** L1..L5 every frame for Sun–Earth and Sun–Jupiter pairs, using analytic CR3BP approximations: `R · (μ/3)^(1/3)` for L1/L2, `R · (1 + 5μ/12)` for L3, equilateral apexes for L4/L5.
 - **Render:** small additive diamond + label.
-- **Toggle:** `G`.
+- **Toggle:** F1 → Bodies → *Lagrange* (`lagrange`).
 
 ### S11 — Meteor showers
 - **What:** 7 peaks (Quadrantids, Lyrids, Eta Aquariids, Perseids, Orionids, Leonids, Geminids) as `(month, day, RA/Dec radiant, rate)`. Within ±3 days of a peak, short additive streaks emit from a disk perpendicular to the radiant just sunward of Earth.
 - **Banner:** bottom-right names the active shower.
-- **Toggle:** `M`.
+- **Toggle:** F1 → Simulation → *Meteors* (`meteors`).
 
 ### S12 — Eclipse / transit calendar
 - **What:** hand-curated list of notable Sun–Earth–Moon alignments and Mercury / Venus transits 1999–2045 (`Bookmarks`).
@@ -190,17 +190,17 @@ See [Top-tier visual features → Bloom](#bloom--hdr-glow).
 
 ### S13 — Tidal locking visualisation
 - **What:** a small additive 3-segment arrow on each spin-locked moon (Earth's Moon, the Galileans, Titan), pointing at the host planet.
-- **Toggle:** `F4` (persisted via `PersistedState.ShowTidalLock`).
+- **Toggle:** F1 → Bodies → *Tidal-lock arrows* (`tidal`) (persisted via `PersistedState.ShowTidalLock`).
 
 ### S14 — Planetary alignment indicator
 - **What:** computes each major planet's heliocentric ecliptic longitude per frame, runs union-find with a 12° threshold, and reports every component of size ≥ 3 as a `Group(indices, names)`. Renders an additive ray from the Sun through every member.
 - **Banner:** top-right names the participants.
-- **Toggle:** `F5`.
+- **Toggle:** F1 → Bodies → *Alignment indicator* (`alignment`).
 
 ### S15 — N-body perturbation mode
 - **What:** velocity-Verlet (kick-drift-kick leapfrog) on the major planets in (AU, days, M⊙) units with `GM_sun = 4π²/365.25² ≈ 2.959e-4 AU³/d²`. Sun is fixed at the origin; mutual gravity uses each planet's tabulated mass. Adaptive sub-stepping caps `|dt|` at 0.5 d/step (200 steps/frame max). Resyncs from analytic Kepler + 1-day finite-difference velocity on toggle/jump/scrub.
 - **Banner:** "N-body mode" stays visible while active.
-- **Toggle:** `F6` (persisted).
+- **Toggle:** F1 → Simulation → *N-body gravity* (`nbody`) (persisted).
 - **Note:** dwarfs / moons / comets stay analytic so the contrast is the whole point.
 
 ### S16 — Real comet catalogue
@@ -244,7 +244,7 @@ See [Top-tier → Smooth focus transitions](#smooth-focus-transitions--planet-tr
 - **Side-effect:** clears trails, plays Q15 "tick", shows banner `kind: title — yyyy-MM-dd`.
 
 ### Q9 — Timeline scrubber
-- **Key:** `V` toggles. 60-cell `█/░` bar at the bottom maps mouse-X to ±100 yr around J2000. While dragging, the regular `_simDays += daysPerSecond·dt` advance is suppressed; trails clear when sim time jumps > 0.5 d.
+- **Toggle:** F1 → Interface → *Timeline* (`timeline`, persisted).
 
 ### Q10 — Cinematic camera paths
 - **What:** 9 waypoint slots, each capturing `Yaw / Pitch / Distance / Target`. Playback uses a 4-point Catmull-Rom spline over 6 s (positions, yaw, pitch, distance interpolated independently).
@@ -259,10 +259,29 @@ See [Top-tier → Smooth focus transitions](#smooth-focus-transitions--planet-tr
 - **What:** `SaveScreenshot` uses `glReadPixels` RGBA8, flips rows, hands pixels to a SkiaSharp `SKBitmap` and writes a 95-quality PNG.
 - **Key:** `F12` (no longer Windows-only).
 
-### Q12 — In-app settings panel
-- **Key:** `F1` toggles. Hand-rolled "ImGui-lite" overlay drawn through `Renderer.DrawText` — no new GL state. 17 toggle rows + speed slider, all backed by closures over the same fields the keyboard shortcuts touch so the two stay in sync.
-- **Mouse:** clicks hit-test against per-row bounding boxes and consume LMB so the camera doesn't yank.
-- **Adaptive height:** the panel is clamped to the viewport, and when the rows don't fit the user can mouse-wheel over the panel to scroll. Off-screen rows have their hit-boxes zeroed out so a click at the same screen Y can't toggle a hidden row.
+### Q12 — In-app settings panel (v2)
+- **Key:** `F1` toggles (also the *Settings* toolbar button). Hand-rolled "ImGui-lite" overlay drawn through `Renderer.DrawText` + `Renderer.FillRect` — no new GL objects beyond a 1×1 white texture.
+- **Generated from the registry:** `BuildSettingsPanel` walks `FeatureRegistry.Entries` and emits one `ToggleRow` per `Feature` (plus `ButtonRow`s for commands flagged `ShowInPanel`, e.g. Language / Screenshot / Quit), so a new feature shows up in the panel by being registered — nothing else to wire.
+- **Tabs:** Bodies · Simulation · Effects · Post-FX · Interface · Developer (`FeatureCategory`). `←` / `→` cycle tabs while the panel is open; the active tab is persisted.
+- **Per row:** `[x]` state, localised label, the bound chord right-aligned (reflects `keybindings.json` overrides), greyed-out with a reason when unavailable (GPU belt without compute support, ocean mask without its texture). Hovering shows the row's `ui.desc.<id>` text in the footer.
+- **Presets** (scene tabs only): Cinematic / Realistic / Performance / Minimal = defaults + a small override set; the matching preset is highlighted. *Reset tab* / *All on* / *All off* act on the current tab only, so Interface / Developer switches (fullscreen, the panel itself) are never yanked.
+- **Mouse:** clicks hit-test against per-row bounding boxes and consume LMB so the camera doesn't yank; wheel scrolls when the rows overflow the viewport (a slim scroll indicator appears). Off-screen and inactive-tab rows have their hit-boxes zeroed so a click can't flip a hidden row.
+- **Esc** closes the panel (it no longer quits the app — see [Esc](#global-keyboard-cheat-sheet)).
+
+### Command palette (Ctrl+K)
+- **What:** a VS-Code-style modal prompt (`CommandPalette`) that live-filters every registry entry by localised label, id and description — prefix matches first, then word-start, substring, id, description.
+- **Keys:** type to filter, `↑` / `↓` (or `Tab`) move, `Enter` toggles a feature (palette stays open so you can flip several) or runs a command (palette closes), `Esc` closes. Rows are also clickable.
+- **Shows:** `[x]` state, category tag, bound chord, and the selected entry's description. Focus commands (`Focus: Mars`), waypoints, bookmarks, screenshot, language, quit — everything is searchable.
+
+### Bottom toolbar
+- **What:** `Toolbar` — a centred strip of text buttons: pause (`▮▮` / `▶`), speed `−` / value / `+` (click the value to reset to 1 d/s), direction (`▶▶` / `◀◀`), Orbits · Labels · Trails · Real scale, and *Settings* / *Commands* buttons. Active toggles are highlighted; hovering shows the feature description and chord.
+- **Toggle:** Interface → Toolbar (`toolbar` id). Lifted above the timeline scrubber when that is visible.
+
+### Feature registry & `keybindings.json`
+- **What:** `FeatureRegistry` / `Feature` / `Command` (`Feature.cs`, `FeatureRegistry.cs`) — the single list every menu is derived from. A `Feature` carries `Get` / `Set` (with all side-effects: trail clears, integrator resync, focus fix-ups), `Default`, `Persist`, `LegacyKey`, optional `Unavailable` reason and `Banner`; a `Command` carries `Run` and an optional live `Status`.
+- **Derived surfaces:** key dispatch (`OnKeyDown` → `FeatureRegistry.Dispatch`, exact Ctrl/Shift/Alt match), F1 panel, Ctrl+K palette, toolbar, the generated help overlay (`ui.help.mouse` / `ui.help.extra` static lines + every bound entry), and `state.json`.
+- **Overrides:** `data/keybindings.json` is a flat `{"id": "Ctrl+Shift+P, Num1"}` object (comments and trailing commas allowed); an empty string unbinds. Unknown ids / unparsable chords are logged and skipped. The shipped file lists every id and has the legacy single-letter layout commented out.
+- **Tests:** `SolarSystem.Tests/FeatureRegistryTests.cs`, `CommandPaletteTests.cs` and the extended `SettingsPanelTests.cs` cover chord parsing, dispatch, overrides, snapshot / restore / legacy migration, presets, palette search and the panel's tab / preset hit-testing.
 
 ### Q13 — Localisation
 - **What:** `Localization.T(key)` over a flat `Dictionary<string,string>`. Built-in English defaults in code; runtime languages from `data/lang.<code>.json` (e.g. `lang.uk.json`). System culture auto-applied at startup if a matching file ships.
@@ -273,14 +292,15 @@ See [Top-tier → Smooth focus transitions](#smooth-focus-transitions--planet-tr
   - `0` — full Controls panel + bottom-left info.
   - `1` — just date + speed at the top.
   - `2` — everything hidden.
-- **Adaptive layout:** the Controls cheat sheet now flows into as many columns as it needs to fit the viewport, then shrinks the font (down to 8 px) if it's still too tall. On a 1280×720 monitor the full ~50-line list still fits without overflowing.
-- **Discovery hint:** in mode `1` a dim line under the speed reads `Tab — help · F1 — settings · F3 — bookmarks · Ctrl+F — search`, so users can still find the menus while the cheat sheet is collapsed.
+- **Adaptive layout:** the cheat sheet flows into as many key/label columns as it needs to fit the viewport, then shrinks the font (down to 8 px) if it's still too tall.
+- **Generated:** the full cheat sheet is built from the registry (static mouse lines from `ui.help.mouse` / `ui.help.extra`, then every bound entry with its live chord), so it can never drift from the real key map — including `keybindings.json` overrides.
+- **Discovery hint:** in mode `1` a dim line under the speed reads `Tab — help · F1 — settings · Ctrl+K — commands · F3 — bookmarks`, so users can still find the menus while the cheat sheet is collapsed.
 - **Persistence:** in `state.json`.
 
 ### Q15 — Mute / SFX
 - **What:** `AudioService` plays a "whoosh" on `BeginFocusTransition` and a "tick" on date jump / bookmark / waypoint record / screenshot.
 - **Implementation:** `Console.Beep` on Windows (dispatched on a `Task` so the main thread never blocks); graceful no-op on Linux/macOS.
-- **Key:** `S` (persisted).
+- **Toggle:** F1 → Interface → *Audio* (`audio`, persisted).
 
 ---
 
@@ -303,7 +323,7 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 ### R4 — Light-time visualisation
 - **What:** each planet's spin angle (and its cloud layer) is evaluated at `simDays - r/c` instead of `simDays`, where `r` is heliocentric distance and `c = 173.1446 AU/day`. Body positions stay current; only the lit longitude shifts.
 - **Visible effect:** ~2° at Earth, ~90° at Neptune.
-- **Key:** `Y` (persisted).
+- **Toggle:** F1 → Simulation → *Light-time delay* (`lighttime`, persisted).
 
 ### R5 — Distance ruler *(planned)*
 - **What:** hold `Shift` while clicking two bodies to draw a labelled line ("Earth → Mars: 0.524 AU, 4.36 light-min").
@@ -342,14 +362,14 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 - **What:** dynamic systems (`SolarWind`, `SolarFlares`, `Comet`) split each frame's `dt` into `ceil(dt / MaxSubStep)` fixed sub-steps (`MaxSubStep = 1/60 s`, capped at 16). High `_daysPerSecond` no longer aliases particle motion or burst timers. `AsteroidBelt` is analytic and unaffected.
 
 ### A6 — GLSL hot-reload
-- **Key:** `F7` toggles a `FileSystemWatcher` over `Resources/Shaders/*.glsl`. Disk events are coalesced into a thread-safe queue; `OnUpdateFrame` calls `ShaderSources.PollPendingReloads` once per frame on the GL thread. `ShaderProgram.Reload` link-tests the new program first and only swaps `Handle` (and clears the uniform-location cache) on success — typos leave the previous program running, with the error in an on-screen banner.
+- **Key:** `hotreload` (F1 → Developer) toggles a `FileSystemWatcher` over `Resources/Shaders/*.glsl`. Disk events are coalesced into a thread-safe queue; `OnUpdateFrame` calls `ShaderSources.PollPendingReloads` once per frame on the GL thread. `ShaderProgram.Reload` link-tests the new program first and only swaps `Handle` (and clears the uniform-location cache) on success — typos leave the previous program running, with the error in an on-screen banner.
 
 ### A7 — Headless render / video export
 - **CLI:** `--render --from YYYY-MM-DD --to YYYY-MM-DD [--dt 1.0] [--frames N] [--fps 60] [--out render] [--ffmpeg path] [--video-out file.mp4] [--real-scale]`.
 - **Behaviour:** `StartVisible = false`, persisted state untouched, sim time pinned to `From + FrameIndex * dt` per frame (deterministic), particle systems use a fixed `1/Fps` sub-step, each `SwapBuffers` is captured to `OutDir/frame_NNNNN.png` via `SaveScreenshotTo`. After the last frame, ffmpeg runs as `ffmpeg -y -framerate Fps -i frame_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 out.mp4` and the window closes so the process exits.
 
 ### A8 — Compute-shader N-body
-- **Key:** `F8` toggles the GPU compute path on the asteroid belt.
+- **Key:** `gpubelt` (F1 → Developer) toggles the GPU compute path on the asteroid belt.
 - **What:** `Resources/Shaders/asteroidbelt.compute.glsl` runs one `gl_GlobalInvocationID.x` per asteroid (local size 64), reads per-body Keplerian elements from a static SSBO (binding 0, 3 × `vec4` per asteroid: `(a, e, n, M0)`, `(Ax.xyz, brightness)`, `(Bx.xyz, sqrt(1−e²))`), solves Kepler with the same 6-iteration Newton step the CPU path uses, and writes `vec4(pos.xyz, brightness)` straight into the instance VBO via SSBO binding 1. `glMemoryBarrier(VertexAttribArrayBarrier)` synchronises with the rasteriser. No CPU round-trip per frame, so the 8 000 cap can grow to 100 000+ without stalling the simulation thread.
 - **Fallback:** if the compute shader fails to compile or link (legacy GL driver), `AsteroidBelt.GpuComputeAvailable` flips to `false` and the original CPU Kepler solver keeps the belt on screen. Persisted via `PersistedState.GpuAsteroidsEnabled`; available as a row in the F1 settings panel (`ui.settings.gpubelt`).
 
@@ -395,46 +415,40 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 
 ## Global keyboard cheat sheet
 
+Only the essentials are bound by default. Everything else is one click away in the `F1` panel or one
+search away in `Ctrl+K`, and any id can be bound in `data/keybindings.json`.
+
 | Key | Action |
 |---|---|
+| `F1` | Settings panel (tabs, presets, every toggle) |
+| `Ctrl+K` | Command palette |
+| `Tab` | Cycle help overlay: full → minimal → hidden |
 | `Space` | Pause / resume |
 | `,` / `.` | Reverse / forward time |
 | `+` / `-` | Speed magnitude |
-| `1`–`8` | Focus a major planet |
+| `0` / `1`–`8` | Focus the Sun / a major planet |
+| `O` / `L` / `T` | Orbits / labels / trails |
 | `R` | Toggle real-scale mode |
-| `T` | Planet trails |
 | `J` | Date-seek prompt |
 | `Ctrl+F` | Search bodies by name |
-| `C` | Constellations |
-| `P` | Probes / spacecraft |
-| `G` | Lagrange points |
-| `M` | Meteor showers |
-| `Ctrl+B` / `Ctrl+Shift+B` | Next / previous bookmark |
-| `F4` | Tidal-lock arrows |
-| `F5` | Planetary-alignment indicator |
-| `F6` | N-body mode |
-| `F7` | GLSL hot-reload |
-| `F8` | GPU asteroid belt (compute shader) |
-| `F10` | Per-frame profiler overlay (A12) |
-| `Alt+Enter` | Toggle borderless fullscreen |
-| `F1` | Settings panel |
+| `Ctrl+E` / `Ctrl+Shift+E` | Next / previous bookmark |
+| `F3` | Bookmarks sidebar |
+| `Ctrl+1..9` / `Ctrl+Shift+1..9` | Record / clear camera waypoint |
+| `Shift+P` / `Ctrl+Shift+P` | Play / clear camera path |
 | `F2` | Cycle language |
+| `F9` | Start / stop video recording |
+| `F10` | Per-frame profiler overlay |
 | `F12` | Screenshot |
-| `Tab` | Cycle help-overlay mode |
 | `~` | FPS / HUD |
-| `V` | Timeline scrubber |
-| `Y` | Light-time visualisation |
-| `U` | Sun corona |
-| `K` | Aurora |
-| `I` | PBR shading |
-| `Q` | Ocean specular mask |
-| `S` | Mute / SFX |
-| `Ctrl+1..9` | Record camera waypoint |
-| `Ctrl+Shift+1..9` | Clear waypoint |
-| `Shift+P` | Play camera path |
-| `Ctrl+Shift+P` | Clear all waypoints |
+| `Alt+Enter` | Toggle borderless fullscreen |
+| `Esc` | Close the open panel / prompt; on an empty screen, twice within 2 s quits |
 
-> Note: `Ctrl+B` is intentionally **not** used as a camera-related shortcut — it is reserved for the bookmark "next" action and conflicts with system hotkeys are respected per project guidelines.
+**Unbound by default** (ids for `keybindings.json`): `axes`, `dwarfs`, `probes`, `lagrange`, `constellations`,
+`tidal`, `alignment`, `meteors`, `lighttime`, `nbody`, `solarwind`, `solarflares`, `corona`, `aurora`,
+`atmosphere`, `eclipses`, `pbr`, `oceanmask`, `bloom`, `autoexposure`, `fxaa`, `lensflare`, `toolbar`,
+`timeline`, `audio`, `hotreload`, `gpubelt`, `quit`.
+
+> Note: `Ctrl+B` is intentionally **not** used — it collides with system hotkeys on some platforms, so bookmarks use `Ctrl+E`.
 
 ---
 
@@ -442,13 +456,14 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 
 | File | Contents |
 |---|---|
-| `%AppData%/SolarSystem/state.json` | Camera, sim time, speed, paused, focus index, every UI toggle, scale mode, language. |
+| `%AppData%/SolarSystem/state.json` | Camera, sim time, speed, focus index, help mode, language, active settings tab, and `Features: {id: bool}` for every persistable registry toggle (pause, scale mode, every visual switch…). Pre-registry saves (one PascalCase bool per toggle) are migrated on first load. |
 | `%AppData%/SolarSystem/campath.json` | The 9 camera-path waypoint slots. |
 | `data/planets.json` | Major + dwarf planet Keplerian elements (optional override). |
 | `data/comets.json` | Comet catalogue (S16). |
 | `data/bookmarks.json` | Eclipse / transit / event bookmarks (Q8). |
 | `data/constellations.json` | Constellation line endpoints (S8). |
 | `data/lang.<code>.json` | Localisation tables (Q13). |
+| `data/keybindings.json` | Optional hotkey overrides: `{"id": "chord, chord"}`. |
 | `screenshots/` | PNG screenshots from `F12`. |
 
 ---

@@ -30,11 +30,11 @@ public static class Localization
         // Persistent discovery hint shown below the date/speed line when the
         // full cheat sheet is collapsed (Tab cycle), so first-time users on a
         // small monitor still know how to reach every menu.
-        ["ui.help.hint"]       = "Tab — help · F1 — settings · F3 — bookmarks · Ctrl+F — search",
+        ["ui.help.hint"]       = "Tab — help · F1 — settings · Ctrl+K — commands · F3 — bookmarks",
         ["ui.audio.on"]        = "Audio: ON",
         ["ui.audio.off"]       = "Audio: OFF",
         ["ui.lang.toggled"]    = "Language: {0}",
-        ["ui.settings.title"]  = "Settings panel — click to toggle, [Esc] close",
+        ["ui.settings.title"]  = "Settings",
         ["ui.scrubber.hint"]   = "drag to seek",
         // Info panel (bottom-left selected body card)
         ["ui.info.radius"]     = "Radius",
@@ -63,63 +63,6 @@ public static class Localization
         ["ui.speed.reverse"]   = "(reverse)",
         // Meteor banner
         ["ui.meteors.active"]  = "{0} active",
-        // Help overlay (top-left controls list)
-        ["ui.help.body"] =
-            "RMB drag    orbit camera\n" +
-            "MMB drag    pan camera\n" +
-            "Wheel       zoom\n" +
-            "Click body  show info\n" +
-            "Dbl-click   focus body\n" +
-            "Dbl empty   unfocus\n" +
-            "0           Sun  /  1-8 planet\n" +
-            "Space       pause / resume\n" +
-            ", / .       reverse / forward\n" +
-            "+ / -       sim speed\n" +
-            "O           toggle orbits\n" +
-            "L           toggle labels\n" +
-            "T           toggle trails\n" +
-            "A           toggle axes\n" +
-            "D           toggle dwarf planets\n" +
-            "C           toggle constellations\n" +
-            "P           toggle probes\n" +
-            "G           toggle Lagrange points\n" +
-            "M           toggle meteor showers\n" +
-            "Ctrl+E      cycle bookmarks (S12)\n" +
-            "F3          bookmarks sidebar (Q8)\n" +
-            "J           jump to date / +/-days\n" +
-            "Ctrl+F      search bodies\n" +
-            "F12         screenshot\n" +
-            "~           FPS / particle HUD\n" +
-            "W           toggle solar wind\n" +
-            "F           toggle solar flares\n" +
-            "R           real / compressed scale\n" +
-            "Y           toggle light-time delay\n" +
-            "B           toggle bloom (V1)\n" +
-            "H           toggle eclipses (V8)\n" +
-            "N           toggle atmosphere (V9)\n" +
-            "E           toggle auto-exposure (V10)\n" +
-            "X           toggle FXAA (V11)\n" +
-            "U           toggle sun corona (V12)\n" +
-            "K           toggle aurora (V13)\n" +
-            "I           toggle PBR shading (V14)\n" +
-            "Q           toggle ocean specular (V15)\n" +
-            "V           timeline scrubber (Q9)\n" +
-            "Ctrl 1-9    record waypoint (Q10)\n" +
-            "Shift+P     play camera path (Q10)\n" +
-            "F1          settings panel (Q12)\n" +
-            "F2          cycle language (Q13)\n" +
-            "F4          tidal-lock arrows (S13)\n" +
-            "F5          alignment indicator (S14)\n" +
-            "F6          N-body mode (S15)\n" +
-            "F7          GLSL hot-reload (A6)\n" +
-            "F8          GPU asteroid belt (A8)\n" +
-            "F9          start / stop video recording (A7)\n" +
-            "F10         per-pass profiler overlay (A12)\n" +
-            "Z           toggle lens flare (V6)\n" +
-            "Alt+Enter   toggle fullscreen\n" +
-            "Tab         help full / mini / off (Q14)\n" +
-            "S           toggle audio cues (Q15)\n" +
-            "Esc         quit",
         ["ui.campath.banner"]  = "Camera path",
         ["ui.tooltip.sun"]     = "Sun",
         // S13 / S14 / S15 toggle banners.
@@ -164,22 +107,22 @@ public static class Localization
         ["ui.settings.pbr"]           = "PBR",
         ["ui.settings.audio"]         = "Audio",
         ["ui.settings.timeline"]      = "Timeline",
-        ["ui.settings.tidal"]         = "Tidal lock (S13)",
-        ["ui.settings.alignment"]     = "Alignment (S14)",
-        ["ui.settings.nbody"]         = "N-body (S15)",
+        ["ui.settings.tidal"]         = "Tidal-lock arrows",
+        ["ui.settings.alignment"]     = "Alignment indicator",
+        ["ui.settings.nbody"]         = "N-body gravity",
         ["ui.settings.lensflare"]     = "Lens flare",
         ["ui.settings.speed"]         = "Speed (d/s)",
         // A8: GPU compute path for the asteroid belt (toggle with F8).
-        ["ui.settings.gpubelt"]       = "GPU asteroids (A8)",
+        ["ui.settings.gpubelt"]       = "GPU asteroid belt",
         ["ui.gpubelt.on"]             = "GPU asteroid belt: ON (compute shader)",
         ["ui.gpubelt.off"]            = "GPU asteroid belt: OFF (CPU Kepler solve)",
         ["ui.gpubelt.unavailable"]    = "GPU asteroid belt unavailable on this driver",
         // Alt+Enter borderless fullscreen toggle.
-        ["ui.settings.fullscreen"]    = "Fullscreen (Alt+Enter)",
+        ["ui.settings.fullscreen"]    = "Fullscreen",
         ["ui.fullscreen.on"]          = "Fullscreen: ON",
         ["ui.fullscreen.off"]         = "Fullscreen: OFF",
         // A12: per-frame profiler overlay (F10).
-        ["ui.settings.profiler"]      = "Profiler (A12)",
+        ["ui.settings.profiler"]      = "Profiler overlay",
         ["ui.profiler.on"]            = "Profiler: ON",
         ["ui.profiler.off"]           = "Profiler: OFF",
         ["ui.profiler.title"]         = "Profiler (F10)",
@@ -192,6 +135,153 @@ public static class Localization
         ["ui.profiler.pass.particles"]= "particles",
         ["ui.profiler.pass.bloom"]    = "bloom",
         ["ui.profiler.pass.ui"]       = "ui",
+
+        // ---- Feature registry: tabs, presets, panel chrome ----
+        ["ui.tab.bodies"]             = "Bodies",
+        ["ui.tab.simulation"]         = "Simulation",
+        ["ui.tab.effects"]            = "Effects",
+        ["ui.tab.postfx"]             = "Post-FX",
+        ["ui.tab.interface"]          = "Interface",
+        ["ui.tab.developer"]          = "Developer",
+        ["ui.settings.presets"]       = "Presets:",
+        ["ui.settings.reset"]         = "Reset tab",
+        ["ui.settings.allon"]         = "All on",
+        ["ui.settings.alloff"]        = "All off",
+        ["ui.settings.footer.hint"]   = "Hover a row for details · ← → switch tabs · Esc closes",
+        ["ui.preset.cinematic"]       = "Cinematic",
+        ["ui.preset.realistic"]       = "Realistic",
+        ["ui.preset.performance"]     = "Performance",
+        ["ui.preset.minimal"]         = "Minimal",
+        ["ui.preset.applied"]         = "Preset applied: {0}",
+        // Feature labels that previously only existed as hotkeys.
+        ["ui.settings.realscale"]     = "Real scale",
+        ["ui.settings.pause"]         = "Pause",
+        ["ui.settings.lighttime"]     = "Light-time delay",
+        ["ui.settings.corona"]        = "Sun corona",
+        ["ui.settings.atmosphere"]    = "Atmosphere",
+        ["ui.settings.eclipses"]      = "Eclipses & shadows",
+        ["ui.settings.oceanmask"]     = "Ocean specular",
+        ["ui.settings.autoexposure"]  = "Auto-exposure",
+        ["ui.settings.settings"]      = "Settings panel",
+        ["ui.settings.toolbar"]       = "Toolbar",
+        ["ui.settings.hud"]           = "FPS / particle HUD",
+        ["ui.settings.bookmarks"]     = "Bookmarks sidebar",
+        ["ui.settings.hotreload"]     = "GLSL hot-reload",
+        ["ui.settings.record"]        = "Record video",
+        // Commands.
+        ["ui.cmd.speedup"]            = "Speed up",
+        ["ui.cmd.speeddown"]          = "Slow down",
+        ["ui.cmd.reverse"]            = "Play backward",
+        ["ui.cmd.forward"]            = "Play forward",
+        ["ui.cmd.focus.sun"]          = "Focus: Sun",
+        ["ui.cmd.focus"]              = "Focus: {0}",
+        ["ui.cmd.help"]               = "Help overlay",
+        ["ui.cmd.language"]           = "Language",
+        ["ui.cmd.search"]             = "Search body…",
+        ["ui.cmd.palette"]            = "Command palette",
+        ["ui.cmd.seek"]               = "Jump to date…",
+        ["ui.cmd.screenshot"]         = "Screenshot",
+        ["ui.cmd.bookmark.next"]      = "Next bookmark",
+        ["ui.cmd.bookmark.prev"]      = "Previous bookmark",
+        ["ui.cmd.path.play"]          = "Play camera path",
+        ["ui.cmd.path.clear"]         = "Clear camera path",
+        ["ui.cmd.waypoint"]           = "Record waypoint {0}",
+        ["ui.cmd.waypoint.clear"]     = "Clear waypoint {0}",
+        ["ui.cmd.quit"]               = "Quit",
+        ["ui.help.mode.0"]            = "full",
+        ["ui.help.mode.1"]            = "minimal",
+        ["ui.help.mode.2"]            = "hidden",
+        // Help overlay: static lines are "key|label"; the rest is generated.
+        ["ui.help.mouse"] =
+            "LMB drag|orbit camera\n" +
+            "MMB drag|pan camera\n" +
+            "Wheel|zoom\n" +
+            "Click body|show info\n" +
+            "Dbl-click|focus body\n" +
+            "Dbl empty|unfocus",
+        ["ui.help.extra"] =
+            "0 / 1–8|focus Sun / planets\n" +
+            "Ctrl+1…9|record camera waypoint\n" +
+            "Ctrl+Shift+1…9|clear waypoint",
+        ["ui.help.esc"]               = "close panel · twice to quit",
+        ["ui.quit.confirm"]           = "Press Esc again to quit",
+        // Palette / toolbar chrome.
+        ["ui.palette.prompt"]         = "Command:",
+        ["ui.palette.empty"]          = "No matches",
+        ["ui.palette.hint"]           = "Enter — toggle / run · ↑↓ — move · Esc — close",
+        ["ui.toolbar.settings"]       = "Settings",
+        ["ui.toolbar.commands"]       = "Commands",
+        ["ui.toolbar.speed.tip"]      = "Click to reset speed to 1 d/s",
+        ["ui.toolbar.direction.tip"]  = "Toggle playback direction",
+        // Banners that used to be hard-coded English in the key handler.
+        ["ui.scale.banner.real"]      = "Scale: REAL (km-derived radii + log depth)",
+        ["ui.scale.banner.compressed"]= "Scale: compressed",
+        ["ui.lighttime.on"]           = "Light-time: ON (Sun lighting delayed by r/c)",
+        ["ui.lighttime.off"]          = "Light-time: OFF",
+        ["ui.meteors.off"]            = "Meteor showers: OFF",
+        ["ui.meteors.on"]             = "Meteor showers: ON",
+        ["ui.meteors.on.active"]      = "Meteor showers: ON — {0} active",
+        ["ui.meteors.on.next"]        = "Meteor showers: ON — next: {0} in {1} day(s)",
+        ["ui.campath.playing"]        = "Playing camera path…",
+        ["ui.campath.need2"]          = "Need ≥ 2 waypoints — record with Ctrl+1..9",
+        ["ui.campath.cleared"]        = "Camera path cleared",
+        ["ui.campath.recorded"]       = "Waypoint {0} recorded ({1} total)",
+        ["ui.campath.slotcleared"]    = "Waypoint {0} cleared",
+        ["ui.unavailable.texture"]    = "texture missing",
+        // One-line descriptions (panel footer / palette subtitle).
+        ["ui.desc.speed"]             = "Simulation speed in days per real second; negative plays backward.",
+        ["ui.desc.speed.up"]          = "Multiply simulation speed by 1.5 (max 1000 d/s).",
+        ["ui.desc.speed.down"]        = "Divide simulation speed by 1.5 (min 0.1 d/s).",
+        ["ui.desc.realscale"]         = "True km-derived radii and distances with logarithmic depth; planets become tiny dots.",
+        ["ui.desc.pause"]             = "Freeze simulation time (particles and camera keep working).",
+        ["ui.desc.lighttime"]         = "Delay each planet's lit longitude by r/c so the terminator matches the photons' departure time.",
+        ["ui.desc.nbody"]             = "Integrate the eight majors with mutual gravity (leapfrog) instead of analytic Kepler.",
+        ["ui.desc.meteors"]           = "Meteor streaks near Earth for ±3 days around each annual shower peak.",
+        ["ui.desc.orbits"]            = "Orbit lines for planets, dwarfs and comets.",
+        ["ui.desc.labels"]            = "Name labels above every body.",
+        ["ui.desc.trails"]            = "Fading line behind each planet showing its recent path.",
+        ["ui.desc.axes"]              = "Rotation-axis lines showing each planet's tilt.",
+        ["ui.desc.dwarfs"]            = "Ceres, Pluto, Haumea, Makemake and Eris.",
+        ["ui.desc.probes"]            = "Voyager 1 & 2, JWST and the ISS.",
+        ["ui.desc.lagrange"]          = "L1–L5 markers for the Sun–Earth and Sun–Jupiter systems.",
+        ["ui.desc.constellations"]    = "Constellation figures drawn on the celestial sphere.",
+        ["ui.desc.tidal"]             = "Arrows on tidally locked moons pointing at their host.",
+        ["ui.desc.alignment"]         = "Highlight and name groups of ≥3 planets within ~12° of heliocentric longitude.",
+        ["ui.desc.focus.sun"]         = "Smoothly move the camera to the Sun.",
+        ["ui.desc.solarwind"]         = "Particle stream flowing outward from the Sun.",
+        ["ui.desc.solarflares"]       = "Erupting flare sprites on the Sun's surface.",
+        ["ui.desc.corona"]            = "Animated granulation and pulse on the Sun's disc.",
+        ["ui.desc.aurora"]            = "Polar aurora ribbons on Earth and Jupiter (brighter with solar wind on).",
+        ["ui.desc.atmosphere"]        = "Rayleigh/Mie rim scattering on Earth, Mars, Venus, Titan and Neptune.",
+        ["ui.desc.eclipses"]          = "Soft shadows cast by moons and planets onto other bodies.",
+        ["ui.desc.pbr"]               = "Cook-Torrance GGX shading with per-body roughness (off = classic Phong).",
+        ["ui.desc.oceanmask"]         = "Specular glint only on Earth's oceans, using the specular map texture.",
+        ["ui.desc.bloom"]             = "HDR bright-pass + Gaussian glow around the Sun, flares and aurora.",
+        ["ui.desc.autoexposure"]      = "Adapt exposure to average scene brightness before ACES tone mapping.",
+        ["ui.desc.fxaa"]              = "Fast approximate anti-aliasing on the final image.",
+        ["ui.desc.lensflare"]         = "Screen-space lens ghosts when the Sun is near the view centre.",
+        ["ui.desc.settings"]          = "This panel.",
+        ["ui.desc.toolbar"]           = "Bottom strip with pause, speed and the core view toggles.",
+        ["ui.desc.hud"]               = "FPS, scale mode and live particle counts (top-right).",
+        ["ui.desc.timeline"]          = "Draggable ±100-year timeline at the bottom of the screen.",
+        ["ui.desc.bookmarks"]         = "Sidebar listing eclipses, transits and other dated events.",
+        ["ui.desc.audio"]             = "Short click / whoosh cues on jumps and focus changes.",
+        ["ui.desc.fullscreen"]        = "Borderless fullscreen on the current monitor.",
+        ["ui.desc.help"]              = "Cycle the top-left cheat sheet: full → minimal → hidden.",
+        ["ui.desc.language"]          = "Cycle through the UI languages found in data/lang.*.json.",
+        ["ui.desc.search"]            = "Type a body name and press Enter to focus it.",
+        ["ui.desc.palette"]           = "Search every setting and command by name.",
+        ["ui.desc.seek"]              = "Jump to YYYY-MM-DD or offset by ±N days.",
+        ["ui.desc.screenshot"]        = "Save a PNG of the current frame to screenshots/.",
+        ["ui.desc.bookmark.next"]     = "Jump forward to the next eclipse / transit bookmark.",
+        ["ui.desc.bookmark.prev"]     = "Jump back to the previous eclipse / transit bookmark.",
+        ["ui.desc.path.play"]         = "Fly the camera through the recorded waypoints (6 s Catmull-Rom).",
+        ["ui.desc.path.clear"]        = "Forget all nine camera waypoints.",
+        ["ui.desc.quit"]              = "Close the application (state is saved).",
+        ["ui.desc.profiler"]          = "Per-pass GPU and CPU frame times (bottom-right).",
+        ["ui.desc.hotreload"]         = "Watch Resources/Shaders and recompile edited GLSL live.",
+        ["ui.desc.gpubelt"]           = "Solve the asteroid belt's Kepler equation in a compute shader instead of on the CPU.",
+        ["ui.desc.record"]            = "Dump every frame to recordings/ and encode an MP4 with ffmpeg on stop.",
     };
 
     private static Dictionary<string, string> _active = _en;
