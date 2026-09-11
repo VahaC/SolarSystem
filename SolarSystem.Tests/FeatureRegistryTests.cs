@@ -261,6 +261,114 @@ public class FeatureRegistryTests
         Assert.True(state["bloom"]);
     }
 
+    // ---- Choice / Slider entries (physics sandbox) ---------------------------------------
+
+    private static (FeatureRegistry reg, int[] mode, double[] g) BuildWithPhysicsEntries()
+    {
+        Localization.SetLanguage("en");
+        var mode = new[] { 0 };
+        var g = new[] { 1.0 };
+        var reg = new FeatureRegistry();
+        bool locked = false;
+        reg.Add(new Choice
+        {
+            Id = "simmode", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.simmode",
+            OptionKeys = new[] { "ui.simmode.ephemeris", "ui.simmode.physics", "ui.simmode.compare" },
+            Get = () => mode[0], Set = v => mode[0] = v, Default = 0,
+        }).WithKey(Keys.F6);
+        reg.Add(new Slider
+        {
+            Id = "physics.g", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.g",
+            Get = () => g[0], Set = v => g[0] = v, Min = 0.01, Max = 100, Step = 1.1, LogScale = true,
+            Default = 1.0, Format = "×{0:0.###}",
+            Unavailable = () => locked || mode[0] == 0 ? "ui.unavailable.ephemeris" : null,
+        });
+        reg.AddPreset(new FeaturePreset
+        {
+            Id = "realistic", LabelKey = "ui.preset.realistic",
+            Choices = new() { ["simmode"] = 1 },
+        });
+        return (reg, mode, g);
+    }
+
+    [Fact]
+    public void Choice_CyclesWrapsAndClamps()
+    {
+        var (reg, mode, _) = BuildWithPhysicsEntries();
+        var c = reg.FindChoice("simmode")!;
+        Assert.Equal("Ephemeris", c.ValueLabel);
+        Assert.True(c.Cycle(1)); Assert.Equal(1, mode[0]);
+        Assert.True(c.Cycle(1)); Assert.Equal(2, mode[0]);
+        Assert.True(c.Cycle(1)); Assert.Equal(0, mode[0]);   // wraps
+        Assert.True(c.Cycle(-1)); Assert.Equal(2, mode[0]);  // wraps backwards
+        Assert.True(c.Apply(99)); Assert.Equal(2, mode[0]);  // clamped
+        Assert.Equal("Compare", c.ValueLabel);
+    }
+
+    [Fact]
+    public void Dispatch_OnChoice_CyclesAndRaisesBanner()
+    {
+        var (reg, mode, _) = BuildWithPhysicsEntries();
+        string? banner = null;
+        Assert.NotNull(reg.Dispatch(Keys.F6, 0, b => banner = b));
+        Assert.Equal(1, mode[0]);
+        Assert.Contains("Physics", banner);
+    }
+
+    [Fact]
+    public void Invoke_OnSlider_ResetsToDefault_OnlyWhenAvailable()
+    {
+        var (reg, mode, g) = BuildWithPhysicsEntries();
+        var s = reg.FindSlider("physics.g")!;
+        string? banner = null;
+        g[0] = 5.0;
+        reg.Invoke(s, b => banner = b);          // ephemeris mode: locked
+        Assert.Equal(5.0, g[0]);
+        Assert.Contains("Physics", banner);      // the "why" text
+        mode[0] = 1;
+        reg.Invoke(s, b => banner = b);
+        Assert.Equal(1.0, g[0]);
+        Assert.Contains("reset", banner);
+        s.Apply(1e9);
+        Assert.Equal(100.0, g[0]);               // clamped to Max
+        Assert.Equal("×100", s.ValueText);
+    }
+
+    [Fact]
+    public void SnapshotChoices_RestoreChoices_RoundTrip_AndIgnoreUnknown()
+    {
+        var (reg, mode, _) = BuildWithPhysicsEntries();
+        mode[0] = 2;
+        var snap = reg.SnapshotChoices();
+        Assert.Equal(2, snap["simmode"]);
+        mode[0] = 0;
+        reg.RestoreChoices(new Dictionary<string, int> { ["simmode"] = 1, ["zzz"] = 7 });
+        Assert.Equal(1, mode[0]);
+        // Sliders are not the registry's to persist.
+        Assert.Empty(reg.Snapshot());
+    }
+
+    [Fact]
+    public void Presets_ApplyAndMatch_ChoiceOverrides()
+    {
+        var (reg, mode, _) = BuildWithPhysicsEntries();
+        var realistic = reg.Presets[0];
+        Assert.False(reg.MatchesPreset(realistic));
+        reg.ApplyPreset(realistic);
+        Assert.Equal(1, mode[0]);
+        Assert.True(reg.MatchesPreset(realistic));
+        reg.ResetCategory(FeatureCategory.Simulation);
+        Assert.Equal(0, mode[0]);
+    }
+
+    [Fact]
+    public void Search_FindsChoicesAndSliders()
+    {
+        var (reg, _, _) = BuildWithPhysicsEntries();
+        Assert.Equal("simmode", reg.Search("simulation mode", 10).Single().Id);
+        Assert.Equal("physics.g", reg.Search("gravity", 10).Single().Id);
+    }
+
     // ---- Palette search ------------------------------------------------------------------
 
     [Fact]

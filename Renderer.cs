@@ -115,6 +115,7 @@ public sealed class Renderer : IDisposable
         BuildAxisLine();
         BuildTextBuffer();
         BuildTrailBuffer();
+        BuildDashBuffer();
         CompileShaders();
 
         _sunTexture = TextureManager.TryLoadFile("8k_sun.jpg", out int sunTex)
@@ -344,6 +345,61 @@ public sealed class Renderer : IDisposable
 
     /// <summary>Draws each planet's rotation axis as a line, applying ONLY the axial tilt and translation
     /// (no spin, no view-dependent transform). Useful to visually verify the axis is fixed in world space.</summary>
+    /// <summary>Physics sandbox (Compare mode): dashed line from a body's ephemeris
+    /// ghost to its physically integrated position, so the divergence is legible even
+    /// when the two spheres overlap. Uses the orbit line shader and a small dynamic VBO.</summary>
+    public void DrawDashedLine(Camera cam, Vector3 a, Vector3 b, Vector4 color, float dashLength)
+    {
+        var d = b - a;
+        float len = d.Length;
+        if (len < 1e-6f) return;
+        // Cap the dash count so a wildly diverged body still costs a bounded upload.
+        int dashes = Math.Clamp((int)(len / MathF.Max(dashLength, 1e-4f)), 1, DashMaxSegments);
+        var dir = d / len;
+        float seg = len / (dashes * 2 - 1);   // dash, gap, dash, … ending on a dash
+        var data = new float[dashes * 2 * 3];
+        for (int i = 0; i < dashes; i++)
+        {
+            var s = a + dir * (seg * (2 * i));
+            var e = a + dir * MathF.Min(seg * (2 * i + 1), len);
+            int o = i * 6;
+            data[o + 0] = s.X; data[o + 1] = s.Y; data[o + 2] = s.Z;
+            data[o + 3] = e.X; data[o + 4] = e.Y; data[o + 5] = e.Z;
+        }
+        _orbitShader.Use();
+        _orbitShader.SetMatrix4("uView", cam.ViewMatrix);
+        _orbitShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _orbitShader.SetMatrix4("uModel", Matrix4.Identity);
+        _orbitShader.SetFloat("uFcoef", Fcoef(cam));
+        _orbitShader.SetVector4("uColor", color);
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.DepthMask(false);
+        GL.BindVertexArray(_dashVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _dashVbo);
+        GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, data.Length * sizeof(float), data);
+        GL.DrawArrays(PrimitiveType.Lines, 0, dashes * 2);
+        GL.BindVertexArray(0);
+        GL.DepthMask(true);
+        GL.Disable(EnableCap.Blend);
+    }
+
+    private const int DashMaxSegments = 256;
+    private int _dashVao, _dashVbo;
+
+    private void BuildDashBuffer()
+    {
+        _dashVao = GL.GenVertexArray();
+        _dashVbo = GL.GenBuffer();
+        GL.BindVertexArray(_dashVao);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _dashVbo);
+        GL.BufferData(BufferTarget.ArrayBuffer, DashMaxSegments * 2 * 3 * sizeof(float),
+            IntPtr.Zero, BufferUsageHint.DynamicDraw);
+        GL.EnableVertexAttribArray(0);
+        GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+        GL.BindVertexArray(0);
+    }
+
     public void DrawPlanetAxes(Camera cam, Planet[] planets)
     {
         _orbitShader.Use();
@@ -768,7 +824,46 @@ public sealed class Renderer : IDisposable
         GL.Disable(EnableCap.Blend);
     }
 
+    /// <summary>The Sun's additive HDR halo sprite at an arbitrary point — used for the
+    /// physics-sandbox collision flash. Components of <paramref name="color"/> above 1
+    /// feed the bloom pass. No depth write, so it never punches holes in bodies.</summary>
+    public void DrawGlowSprite(Camera cam, Vector3 center, float size, Vector3 color)
+    {
+        _glowShader.Use();
+        _glowShader.SetMatrix4("uView", cam.ViewMatrix);
+        _glowShader.SetMatrix4("uProj", cam.ProjectionMatrix);
+        _glowShader.SetFloat("uFcoef", Fcoef(cam));
+        _glowShader.SetVector3("uCenter", center);
+        _glowShader.SetFloat("uSize", size);
+        _glowShader.SetVector3("uColor", color);
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+        GL.DepthMask(false);
+        GL.BindVertexArray(_quadVao);
+        GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+        GL.BindVertexArray(0);
+        GL.DepthMask(true);
+        GL.Disable(EnableCap.Blend);
+    }
+
     public void DrawPlanet(Camera cam, Planet p, Vector3 sunPos)
+        => DrawPlanetAt(cam, p, sunPos, p.Position, 1f, ghost: false);
+
+    /// <summary>Physics sandbox (Compare mode): draw a translucent copy of
+    /// <paramref name="p"/> at <paramref name="position"/> — same mesh, texture and
+    /// spin, alpha-blended, no eclipse shadows, no atmosphere rim, no depth write —
+    /// so the ephemeris position stays visible next to the physically integrated body.</summary>
+    public void DrawPlanetGhost(Camera cam, Planet p, Vector3 sunPos, Vector3 position, float alpha)
+    {
+        GL.Enable(EnableCap.Blend);
+        GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        GL.DepthMask(false);
+        DrawPlanetAt(cam, p, sunPos, position, alpha, ghost: true);
+        GL.DepthMask(true);
+        GL.Disable(EnableCap.Blend);
+    }
+
+    private void DrawPlanetAt(Camera cam, Planet p, Vector3 sunPos, Vector3 position, float alpha, bool ghost)
     {
         _planetShader.Use();
         _planetShader.SetMatrix4("uView", cam.ViewMatrix);
@@ -786,9 +881,10 @@ public sealed class Renderer : IDisposable
         var model = Matrix4.CreateScale(p.VisualRadius)
                     * Matrix4.CreateRotationY(p.RotationAngleRad)
                     * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(p.AxisTiltDeg))
-                    * Matrix4.CreateTranslation(p.Position);
+                    * Matrix4.CreateTranslation(position);
         _planetShader.SetMatrix4("uModel", model);
-        _planetShader.SetVector3("uPlanetCenter", p.Position);
+        _planetShader.SetVector3("uPlanetCenter", position);
+        _planetShader.SetFloat("uAlpha", alpha);
         _planetShader.SetVector3("uLightPos", sunPos);
         _planetShader.SetVector3("uViewPos", cam.Eye);
         _planetShader.SetVector3("uLightColor", new Vector3(1.0f, 0.96f, 0.88f));
@@ -828,7 +924,7 @@ public sealed class Renderer : IDisposable
 
         // V8: eclipse / body-shadow casters. The list was uploaded once per frame
         // via SetShadowCasters; the shader skips the body matching uPlanetCenter.
-        int shadowCount = EclipsesEnabled ? _shadowCount : 0;
+        int shadowCount = EclipsesEnabled && !ghost ? _shadowCount : 0;
         _planetShader.SetInt("uShadowCount", shadowCount);
         if (shadowCount > 0)
             _planetShader.SetVector4Array("uShadowSpheres", _shadowSphereData, shadowCount);
@@ -849,7 +945,7 @@ public sealed class Renderer : IDisposable
         // V9: per-body atmosphere coefficients. Earth, Mars, Venus, Titan and
         // Neptune get a Rayleigh+Mie rim glow; everything else stays opaque.
         GetAtmosphere(p.Name, out bool hasAtm, out Vector3 atmColor, out float atmStrength);
-        if (!AtmosphereEnabled) hasAtm = false;
+        if (!AtmosphereEnabled || ghost) hasAtm = false;
         _planetShader.SetInt("uHasAtmosphere", hasAtm ? 1 : 0);
         if (hasAtm)
         {
@@ -1194,6 +1290,7 @@ public sealed class Renderer : IDisposable
         GL.DeleteVertexArray(_axisVao); GL.DeleteBuffer(_axisVbo);
         GL.DeleteVertexArray(_textVao); GL.DeleteBuffer(_textVbo);
         GL.DeleteVertexArray(_trailVao); GL.DeleteBuffer(_trailVbo);
+        if (_dashVao != 0) { GL.DeleteVertexArray(_dashVao); GL.DeleteBuffer(_dashVbo); }
         GL.DeleteTexture(_sunTexture);
         GL.DeleteTexture(_ringTexture);
         GL.DeleteTexture(_starsTexture);

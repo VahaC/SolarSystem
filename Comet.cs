@@ -122,6 +122,27 @@ public sealed class Comet : IDisposable
         }
     }
 
+    /// <summary>Physics / Compare modes: place the nucleus from an externally integrated
+    /// heliocentric position instead of the Kepler solve. Same world-space mapping and
+    /// spin update as <see cref="UpdatePosition"/>.</summary>
+    public void ApplyHelioAU(Vector3d helioAU, double simDays)
+    {
+        Body.HelioAU = helioAU;
+        float s = OrbitalMechanics.OrbitWorldScale(Body.SemiMajorAxisAU);
+        Body.Position = new Vector3(
+            (float)(Body.HelioAU.X * s),
+            (float)(Body.HelioAU.Y * s),
+            (float)(Body.HelioAU.Z * s));
+        if (Body.RotationPeriodHours != 0.0)
+        {
+            const double TwoPi = Math.PI * 2.0;
+            double angle = (simDays * 24.0 / Body.RotationPeriodHours) * TwoPi;
+            angle %= TwoPi;
+            if (angle < 0) angle += TwoPi;
+            Body.RotationAngleRad = (float)angle;
+        }
+    }
+
     /// <summary>Advance tail particles and emit new ones from the comet nucleus,
     /// streaming radially outward from the Sun (the iconic anti-solar tail).</summary>
     public void UpdateTail(float dt, Vector3 sunPos)

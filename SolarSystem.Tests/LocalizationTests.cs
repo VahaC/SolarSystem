@@ -87,6 +87,22 @@ public class LocalizationTests
     }
 
     [Fact]
+    public void UkrainianTable_CoversEveryEnglishKey_AndHasNoOrphans()
+    {
+        // Physics-sandbox rows (ui.simmode.*, ui.physics.*, ui.desc.physics.*, …) must
+        // ship in both languages; an orphan in the JSON usually means a key was renamed
+        // on one side only.
+        string path = Path.Combine(System.AppContext.BaseDirectory, "data", "lang.uk.json");
+        var uk = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path))!;
+        var missing = Localization.EnglishKeys.Where(k => !uk.ContainsKey(k)).OrderBy(k => k).ToList();
+        var orphans = uk.Keys.Where(k => !Localization.EnglishKeys.Contains(k)).OrderBy(k => k).ToList();
+        Assert.True(missing.Count == 0, "missing in lang.uk.json: " + string.Join(", ", missing));
+        Assert.True(orphans.Count == 0, "orphans in lang.uk.json: " + string.Join(", ", orphans));
+        foreach (var k in new[] { "ui.simmode.compare", "ui.desc.physics.g", "ui.tab.masses", "ui.unavailable.ephemeris" })
+            Assert.False(string.IsNullOrWhiteSpace(uk[k]), k);
+    }
+
+    [Fact]
     public void SetLanguage_Uk_LoadsUkrainianTable()
     {
         try

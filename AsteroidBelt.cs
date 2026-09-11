@@ -57,6 +57,31 @@ public sealed class AsteroidBelt : IDisposable
     private const float Power_Compressed = 0.45f;
     private const float AuToWorld_Real = 50.0f;
 
+    // ---- Physics sandbox: test-particle mode -------------------------------------------
+    // In Physics / Compare mode every rock stops solving Kepler's equation and instead
+    // integrates a = Σ GM_j / r^n in the field of the Sun + planets that PhysicsWorld
+    // recorded while it stepped this frame. The state (barycentric pos + vel) lives in
+    // an SSBO on the GPU path, or in the arrays below on the CPU fallback.
+
+    /// <summary>True while the belt is being integrated as test particles.</summary>
+    public bool PhysicsMode { get; private set; }
+    /// <summary>Which path owns the live state; flipping the GPU toggle mid-physics
+    /// re-seeds from the current Kepler position (tiny discontinuity, documented).</summary>
+    private bool _physicsOnGpu;
+    private Vector3d[] _physPos = Array.Empty<Vector3d>();
+    private Vector3d[] _physVel = Array.Empty<Vector3d>();
+    private int _stateSsbo, _stepsSsbo;
+    private float[] _stepScratch = Array.Empty<float>();
+    /// <summary>Longest leapfrog step the belt takes (days). Main-belt periods are
+    /// 3–6 years, so 1 d keeps the phase error below 1e-5 per orbit.</summary>
+    public double MaxBeltStepDays { get; set; } = 1.0;
+    /// <summary>CPU fallback: cap on steps per frame. Beyond this the recorded field is
+    /// merged into coarser steps (the belt gets less accurate at extreme speeds instead of
+    /// stalling the UI). The GPU path has no such cap.</summary>
+    public int MaxCpuStepsPerFrame { get; set; } = 16;
+    /// <summary>Diagnostics: leapfrog steps the belt replayed in the last update.</summary>
+    public int LastPhysicsSteps { get; private set; }
+
     public AsteroidBelt(int count = 8000, int seed = 1337)
     {
         Count = count;
@@ -167,6 +192,211 @@ public sealed class AsteroidBelt : IDisposable
 
     public void SetViewport(Vector2 viewport) => _viewport = viewport;
 
+    // ---- Physics sandbox ------------------------------------------------------------------
+
+    /// <summary>Seed every asteroid's barycentric state from its Kepler orbit at
+    /// <paramref name="world"/>'s current time and switch to test-particle integration.
+    /// Call again after the world is re-initialised or reset.</summary>
+    public void BeginPhysics(PhysicsWorld world)
+    {
+        if (!world.Ready) return;
+        if (_physPos.Length != Count) { _physPos = new Vector3d[Count]; _physVel = new Vector3d[Count]; }
+        double t = world.TimeDays;
+        var sunPos = world.AbsolutePosition(0);
+        var sunVel = world.AbsoluteVelocity(0);
+        for (int i = 0; i < Count; i++)
+        {
+            ref var a = ref _asteroids[i];
+            double M = a.M0 + a.N * t;
+            M %= 2.0 * Math.PI;
+            if (M < 0) M += 2.0 * Math.PI;
+            double E = OrbitalMechanics.SolveKepler(M, a.E);
+            double cosE = Math.Cos(E), sinE = Math.Sin(E);
+            double xp = a.A * (cosE - a.E);
+            double yp = a.A * a.EFactor * sinE;
+            // dE/dt = n / (1 - e cos E)  ⇒  velocity in the perifocal plane.
+            double Edot = a.N / (1.0 - a.E * cosE);
+            double vx = -a.A * sinE * Edot;
+            double vy = a.A * a.EFactor * cosE * Edot;
+            var Ax = new Vector3d(a.Ax.X, a.Ax.Y, a.Ax.Z);
+            var Bx = new Vector3d(a.Bx.X, a.Bx.Y, a.Bx.Z);
+            _physPos[i] = Ax * xp + Bx * yp + sunPos;
+            _physVel[i] = Ax * vx + Bx * vy + sunVel;
+        }
+        PhysicsMode = true;
+        _physicsOnGpu = UseGpuCompute && GpuComputeAvailable && _compute != null;
+        if (_physicsOnGpu) UploadPhysicsState();
+        LastPhysicsSteps = 0;
+    }
+
+    /// <summary>Back to the analytic Kepler path (state discarded).</summary>
+    public void EndPhysics()
+    {
+        PhysicsMode = false;
+        LastPhysicsSteps = 0;
+    }
+
+    private void UploadPhysicsState()
+    {
+        if (_stateSsbo == 0) _stateSsbo = GL.GenBuffer();
+        var data = new float[Count * 8];
+        for (int i = 0; i < Count; i++)
+        {
+            int o = i * 8;
+            data[o + 0] = (float)_physPos[i].X; data[o + 1] = (float)_physPos[i].Y; data[o + 2] = (float)_physPos[i].Z; data[o + 3] = 0f;
+            data[o + 4] = (float)_physVel[i].X; data[o + 5] = (float)_physVel[i].Y; data[o + 6] = (float)_physVel[i].Z; data[o + 7] = 0f;
+        }
+        GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _stateSsbo);
+        GL.BufferData(BufferTarget.ShaderStorageBuffer, data.Length * sizeof(float), data, BufferUsageHint.DynamicCopy);
+        GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+    }
+
+    /// <summary>Replay the field <paramref name="world"/> recorded this frame: merge its
+    /// global-step boundaries into ≤ <see cref="MaxBeltStepDays"/> chunks and leapfrog
+    /// every asteroid through them (GPU compute when available, CPU otherwise), then
+    /// repack heliocentric world positions into the VBO.</summary>
+    public void UpdatePhysics(PhysicsWorld world)
+    {
+        if (!PhysicsMode || !world.Ready) { Update(world.TimeDays); return; }
+        bool gpuNow = UseGpuCompute && GpuComputeAvailable && _compute != null;
+        if (gpuNow != _physicsOnGpu)
+        {
+            // The live state sits on the other side; re-seed rather than read back.
+            BeginPhysics(world);
+        }
+
+        var recs = world.GlobalRecords;
+        int bodies = world.RecordBodies.Count;
+        if (recs.Count == 0 || bodies == 0) return;
+
+        // Merge consecutive global steps into chunks of at most MaxBeltStepDays.
+        double cap = MaxBeltStepDays;
+        if (!gpuNow && recs.Count > 1)
+        {
+            double total = 0; for (int k = 1; k < recs.Count; k++) total += Math.Abs(recs[k].StepDays);
+            cap = Math.Max(cap, total / MaxCpuStepsPerFrame);
+        }
+        var chunkIdx = new List<int> { 0 };
+        var chunkDt = new List<double> { 0.0 };
+        double acc = 0;
+        for (int k = 1; k < recs.Count; k++)
+        {
+            acc += recs[k].StepDays;
+            bool last = k == recs.Count - 1;
+            if (Math.Abs(acc) >= cap - 1e-12 || last)
+            {
+                if (acc != 0.0 || last) { chunkIdx.Add(k); chunkDt.Add(acc); acc = 0; }
+            }
+        }
+        int steps = chunkIdx.Count - 1;
+        LastPhysicsSteps = steps;
+
+        if (gpuNow) UpdatePhysicsGpu(world, recs, chunkIdx, chunkDt, bodies);
+        else UpdatePhysicsCpu(world, recs, chunkIdx, chunkDt, bodies);
+    }
+
+    private void UpdatePhysicsGpu(PhysicsWorld world, IReadOnlyList<PhysicsWorld.StepRecord> recs,
+        List<int> chunkIdx, List<double> chunkDt, int bodies)
+    {
+        int stride = 1 + bodies;
+        int records = chunkIdx.Count;
+        int floats = records * stride * 4;
+        if (_stepScratch.Length < floats) _stepScratch = new float[floats];
+        var gm = world.RecordGM;
+        for (int c = 0; c < records; c++)
+        {
+            int o = c * stride * 4;
+            _stepScratch[o + 0] = (float)chunkDt[c]; _stepScratch[o + 1] = 0f; _stepScratch[o + 2] = 0f; _stepScratch[o + 3] = 0f;
+            var pos = recs[chunkIdx[c]].Positions;
+            for (int j = 0; j < bodies; j++)
+            {
+                int p = o + 4 + j * 4;
+                _stepScratch[p + 0] = (float)pos[j].X;
+                _stepScratch[p + 1] = (float)pos[j].Y;
+                _stepScratch[p + 2] = (float)pos[j].Z;
+                _stepScratch[p + 3] = (float)gm[j];
+            }
+        }
+        if (_stepsSsbo == 0) _stepsSsbo = GL.GenBuffer();
+        GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _stepsSsbo);
+        GL.BufferData(BufferTarget.ShaderStorageBuffer, floats * sizeof(float), _stepScratch, BufferUsageHint.StreamDraw);
+        GL.BindBuffer(BufferTarget.ShaderStorageBuffer, 0);
+
+        _compute!.Use();
+        _compute.SetInt("uMode", 1);
+        _compute.SetInt("uCount", Count);
+        _compute.SetInt("uRealScale", OrbitalMechanics.RealScale ? 1 : 0);
+        _compute.SetFloat("uK", K_Compressed);
+        _compute.SetFloat("uPower", Power_Compressed);
+        _compute.SetFloat("uAuToWorld", AuToWorld_Real);
+        _compute.SetInt("uBodyCount", bodies);
+        _compute.SetInt("uStride", stride);
+        _compute.SetInt("uStepCount", records - 1);
+        _compute.SetFloat("uExponent", (float)world.Constants.GravityExponent);
+        _compute.SetFloat("uMinSep2", (float)(PhysicsWorld.MinSeparationAU * PhysicsWorld.MinSeparationAU));
+
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 0, _elementsSsbo);
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 1, _mesh.InstanceVbo);
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 2, _stateSsbo);
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 3, _stepsSsbo);
+        int groups = (Count + 63) / 64;
+        GL.DispatchCompute(groups, 1, 1);
+        GL.MemoryBarrier(MemoryBarrierFlags.VertexAttribArrayBarrierBit |
+                         MemoryBarrierFlags.ShaderStorageBarrierBit);
+        for (int b = 0; b < 4; b++) GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, b, 0);
+    }
+
+    private void UpdatePhysicsCpu(PhysicsWorld world, IReadOnlyList<PhysicsWorld.StepRecord> recs,
+        List<int> chunkIdx, List<double> chunkDt, int bodies)
+    {
+        var gm = world.RecordGM;
+        double n = world.Constants.GravityExponent;
+        double min2 = PhysicsWorld.MinSeparationAU * PhysicsWorld.MinSeparationAU;
+
+        Vector3d Accel(Vector3d r, Vector3d[] pos)
+        {
+            Vector3d a = Vector3d.Zero;
+            for (int j = 0; j < bodies; j++)
+            {
+                var d = pos[j] - r;
+                double d2 = d.LengthSquared;
+                if (d2 < min2) d2 = min2;
+                double inv = n == 2.0 ? 1.0 / (d2 * Math.Sqrt(d2)) : Math.Pow(d2, -0.5 * (n + 1.0));
+                a += d * (gm[j] * inv);
+            }
+            return a;
+        }
+
+        int steps = chunkIdx.Count - 1;
+        for (int i = 0; i < Count; i++)
+        {
+            var p = _physPos[i];
+            var v = _physVel[i];
+            var acc = Accel(p, recs[chunkIdx[0]].Positions);
+            for (int c = 1; c <= steps; c++)
+            {
+                double dt = chunkDt[c];
+                v += acc * (0.5 * dt);
+                p += v * dt;
+                acc = Accel(p, recs[chunkIdx[c]].Positions);
+                v += acc * (0.5 * dt);
+            }
+            _physPos[i] = p;
+            _physVel[i] = v;
+        }
+
+        var sun = recs[chunkIdx[steps]].Positions[0];
+        for (int i = 0; i < Count; i++)
+        {
+            float s = OrbitalMechanics.OrbitWorldScale(_asteroids[i].A);
+            var h = _physPos[i] - sun;
+            _packed[i * 4 + 0] = (float)(h.X * s);
+            _packed[i * 4 + 1] = (float)(h.Y * s);
+            _packed[i * 4 + 2] = (float)(h.Z * s);
+        }
+        _mesh.UploadInstances(_packed, Count);
+    }
+
     /// <summary>Advance every asteroid's mean anomaly to <paramref name="simDays"/> and
     /// repack the world positions into the VBO.</summary>
     public void Update(double simDays)
@@ -214,6 +444,7 @@ public sealed class AsteroidBelt : IDisposable
     private void UpdateGpu(double simDays)
     {
         _compute!.Use();
+        _compute.SetInt("uMode", 0);
         _compute.SetFloat("uSimDays", (float)simDays);
         _compute.SetInt("uCount", Count);
         _compute.SetInt("uRealScale", OrbitalMechanics.RealScale ? 1 : 0);
@@ -263,6 +494,8 @@ public sealed class AsteroidBelt : IDisposable
         _mesh?.Dispose();
         _compute?.Dispose();
         if (_elementsSsbo != 0) GL.DeleteBuffer(_elementsSsbo);
-        _elementsSsbo = 0;
+        if (_stateSsbo != 0) GL.DeleteBuffer(_stateSsbo);
+        if (_stepsSsbo != 0) GL.DeleteBuffer(_stepsSsbo);
+        _elementsSsbo = _stateSsbo = _stepsSsbo = 0;
     }
 }

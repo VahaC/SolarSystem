@@ -34,6 +34,12 @@ public sealed class HeadlessRenderJob
     public string? VideoOutPath { get; set; }
     /// <summary>Force real-scale mode for the entire render.</summary>
     public bool RealScale { get; init; }
+    /// <summary>Run the export in <see cref="SimulationMode.Physics"/>: every body is
+    /// seeded from the ephemeris at <see cref="FromSimDays"/> and integrated frame by
+    /// frame (each frame advances exactly <see cref="DaysPerFrame"/>, no per-frame CPU
+    /// budget, so the output stays deterministic). Constants come from the persisted
+    /// state.json Physics section.</summary>
+    public bool Physics { get; init; }
 
     // Mutable progress, advanced by the window each rendered frame.
     public int FrameIndex { get; set; }
@@ -52,6 +58,7 @@ public sealed class HeadlessRenderJob
         string? ffmpeg = null;
         string? videoOut = null;
         bool realScale = false;
+        bool physics = false;
         int? frames = null;
 
         for (int i = 0; i < args.Length; i++)
@@ -73,6 +80,7 @@ public sealed class HeadlessRenderJob
                 case "--ffmpeg": ffmpeg = Next(); break;
                 case "--video-out": videoOut = Next(); break;
                 case "--real-scale": realScale = true; break;
+                case "--physics": physics = true; break;
                 default:
                     if (render) throw new ArgumentException($"Unknown render option: {a}");
                     break;
@@ -104,6 +112,7 @@ public sealed class HeadlessRenderJob
             FfmpegPath = ffmpeg,
             VideoOutPath = videoOut,
             RealScale = realScale,
+            Physics = physics,
         };
     }
 

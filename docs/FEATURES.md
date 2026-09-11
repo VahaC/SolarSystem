@@ -197,11 +197,21 @@ See [Top-tier visual features → Bloom](#bloom--hdr-glow).
 - **Banner:** top-right names the participants.
 - **Toggle:** F1 → Bodies → *Alignment indicator* (`alignment`).
 
-### S15 — N-body perturbation mode
-- **What:** velocity-Verlet (kick-drift-kick leapfrog) on the major planets in (AU, days, M⊙) units with `GM_sun = 4π²/365.25² ≈ 2.959e-4 AU³/d²`. Sun is fixed at the origin; mutual gravity uses each planet's tabulated mass. Adaptive sub-stepping caps `|dt|` at 0.5 d/step (200 steps/frame max). Resyncs from analytic Kepler + 1-day finite-difference velocity on toggle/jump/scrub.
-- **Banner:** "N-body mode" stays visible while active.
-- **Toggle:** F1 → Simulation → *N-body gravity* (`nbody`) (persisted).
-- **Note:** dwarfs / moons / comets stay analytic so the contrast is the whole point.
+### S15 — Physics sandbox (Ephemeris / Physics / Compare)
+- **What:** supersedes the majors-only "N-body perturbation mode" (tracked as S17 in `ROADMAP.md`). One `PhysicsWorld` integrates every massive body — the Sun (free, barycentric frame), 8 planets, 5 dwarfs, the Moon, the Galileans and Titan — while comets and the asteroid belt ride the same field as massless test particles (belt: `asteroidbelt.compute.glsl` mode 1 replays the planet positions the world recorded that frame; CPU fallback with the same formula, capped at 16 coarser steps per frame). Units AU / days / M⊙, `GM☉ = k² ≈ 2.959e-4 AU³/d²`.
+- **Modes** (`simmode`, F1 → Simulation → *Simulation mode*, persisted in `Choices`):
+  - *Ephemeris* — the analytic path, unchanged bit-for-bit (eclipse bookmarks still land to the minute). Constants greyed out ("switch to Physics or Compare").
+  - *Physics* — the world is seeded from the ephemeris at the current date (position from the analytic model, velocity from a 5-point stencil; the Moon's seed is least-squares fitted over ±30 d so the truncated ELP series doesn't bias its mean motion; Galileans/Titan get the analytic circular velocity) and takes over every body.
+  - *Compare* — physics drives the bodies; every ephemeris position is drawn as a translucent ghost (same mesh, alpha 0.3, no shadows / atmosphere) plus a dashed ghost → body link.
+- **Constants** (`physics.g`, `physics.sunmass`, `physics.exponent`, `physics.lightspeed`, `mass.<body>` on the **Masses** tab; all logarithmic except the exponent): G multiplier, Sun mass, exponent `n` in `a = GM/rⁿ` (1.5–3.0, step 0.01), speed of light for the light-time delay, per-body mass 0.01×–100×. Changing a value never re-seeds. Buttons: *Reset constants* (`physics.resetconst`), *Reset masses* (`physics.resetmasses`), *Restart from ephemeris* (`physics.reinit`). Constants live in the `Physics` section of `state.json`.
+- **Collisions** (`physics.collisions`, Simulation tab, on by default): every live pair is swept along the step just taken — heliocentric pairs over the global step, host + satellites and sibling satellites per planetocentric sub-step, so the chord of their curved motion stays short — and when the closest approach is below `R₁ + R₂` (real radii: Sun 695 700 km, planets / moons from the body table, comets 5 km) the two merge, perfectly inelastically. The heavier body survives (a massive body always beats a test particle) at the pair's centre of mass with the summed momentum, its mass and volume are summed (`R³ = R₁³ + R₂³`), the other is marked dead and parked on the survivor (its position keeps tracking it), its satellites are re-parented to the survivor — or to the survivor's host when the survivor is itself a moon — and a moon that swallows its own planet is promoted to heliocentric level. The hierarchy is rebuilt and every relative state re-derived from the absolute one, so nothing else moves; the energy / angular-momentum drift references are rebased. Comets hitting a massive body vanish (no mass change); belt rocks are not checked. UI: banner, a bloom flash on the survivor, the diagnostics card lists the count and the last three events (date, impact speed, impact energy `½μv²` in J) and says "absorbed by …" for a dead selected body; absorbed bodies drop out of rendering, orbits, labels, picking, search, shadows, ghosts, tidal arrows and the alignment indicator, a dead comet's tail fades out, and the body's *Masses* slider greys out ("absorbed in a collision"). Focus / selection on the absorbed body jump to the survivor. Off: bodies pass through each other (softened at 1e-5 AU). *Restart from ephemeris*, `Reset` and leaving the physics modes revive everything; merges are not persisted (the world is re-seeded on load).
+- **Integrator:** kick-drift-kick leapfrog composed into a 4th-order Yoshida scheme (symplectic, reversible). Hierarchical step: global ≤ 0.5 d and adaptive to ≥ 500 steps per orbit of the fastest body (≈ 0.2 d with Mercury); each planet + satellites subsystem is sub-stepped in the planetocentric frame (Moon ≤ 0.05 d, Galileans ≤ 0.01 d, adaptive) with the direct-minus-indirect tidal terms of the Sun and the other planets, the planet's global state being the subsystem barycentre. Pair separations are floored at 1e-5 AU so nothing can NaN.
+- **Measured:** planets' energy drift ≈ 2e-9 relative over 100 years; no spurious collision in a decade of the real system; Moon within 0.2° of ELP-2000 after 10 years; Mercury's spurious perihelion drift ≈ 5″/century (two-body), ≈ 560″/century with the planets (Newtonian expectation ≈ 531″ + wobble); with `n = 2.05` it precesses degrees per decade.
+- **Time jumps:** in Physics / Compare a date seek, scrubber drag or bookmark integrates from the current time to the target (negative steps for jumps back) in per-frame chunks — 2000 global steps or 8 ms per frame — with a top-centre progress bar; about 20–30 s per century. Slower and only approximately reproducible compared with Ephemeris mode.
+- **Diagnostics** (`physics.hud`, Simulation tab): mode banner top-right; card with the global step, steps this frame (global · satellite · belt), relative energy and angular-momentum drift since the seed, the constants, and the osculating `a`, `e`, `P` of the selected (or focused) body about its primary.
+- **Accuracy vs reality:** the seed is the *mean*-element ephemeris, not the osculating state, so even with real constants the planets drift from the Standish orbits by ~0.1–0.7°/decade (Saturn worst — its short-period Jupiter terms are missing from the mean elements). Real-scale, light-time (scaled by the speed-of-light slider), trails, picking and focus work in every mode.
+- **Headless:** `--render … --physics` seeds at `--from` and integrates exactly `--dt` days per frame with no CPU budget (deterministic).
+- **Migration:** saves with `Features.nbody = true` (or the pre-registry `NBodyEnabled`) load as Physics mode; the *Realistic* preset selects Physics.
 
 ### S16 — Real comet catalogue
 - **What:** JSON-driven catalogue (`data/comets.json`) of well-known comets — Halley, Hale–Bopp, NEOWISE, Encke — each with full Keplerian elements + per-comet tail tuning (`emissionRate`, `tailLifetime`, `tailSpeed`). Each gets its own orbit polyline, particle tail, label, picking entry, HUD line.
@@ -365,7 +375,7 @@ Same. `PlanetVS` expands sphere vertices outward when projected radius < `uMinPi
 - **Key:** `hotreload` (F1 → Developer) toggles a `FileSystemWatcher` over `Resources/Shaders/*.glsl`. Disk events are coalesced into a thread-safe queue; `OnUpdateFrame` calls `ShaderSources.PollPendingReloads` once per frame on the GL thread. `ShaderProgram.Reload` link-tests the new program first and only swaps `Handle` (and clears the uniform-location cache) on success — typos leave the previous program running, with the error in an on-screen banner.
 
 ### A7 — Headless render / video export
-- **CLI:** `--render --from YYYY-MM-DD --to YYYY-MM-DD [--dt 1.0] [--frames N] [--fps 60] [--out render] [--ffmpeg path] [--video-out file.mp4] [--real-scale]`.
+- **CLI:** `--render --from YYYY-MM-DD --to YYYY-MM-DD [--dt 1.0] [--frames N] [--fps 60] [--out render] [--ffmpeg path] [--video-out file.mp4] [--real-scale] [--physics]`.
 - **Behaviour:** `StartVisible = false`, persisted state untouched, sim time pinned to `From + FrameIndex * dt` per frame (deterministic), particle systems use a fixed `1/Fps` sub-step, each `SwapBuffers` is captured to `OutDir/frame_NNNNN.png` via `SaveScreenshotTo`. After the last frame, ffmpeg runs as `ffmpeg -y -framerate Fps -i frame_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 out.mp4` and the window closes so the process exits.
 
 ### A8 — Compute-shader N-body
@@ -444,9 +454,12 @@ search away in `Ctrl+K`, and any id can be bound in `data/keybindings.json`.
 | `Esc` | Close the open panel / prompt; on an empty screen, twice within 2 s quits |
 
 **Unbound by default** (ids for `keybindings.json`): `axes`, `dwarfs`, `probes`, `lagrange`, `constellations`,
-`tidal`, `alignment`, `meteors`, `lighttime`, `nbody`, `solarwind`, `solarflares`, `corona`, `aurora`,
+`tidal`, `alignment`, `meteors`, `lighttime`, `simmode`, `physics.g`, `physics.sunmass`, `physics.exponent`,
+`physics.lightspeed`, `physics.hud`, `physics.collisions`, `physics.resetconst`, `physics.reinit`, `physics.resetmasses`, `mass.<body>`,
+`solarwind`, `solarflares`, `corona`, `aurora`,
 `atmosphere`, `eclipses`, `pbr`, `oceanmask`, `bloom`, `autoexposure`, `fxaa`, `lensflare`, `toolbar`,
-`timeline`, `audio`, `hotreload`, `gpubelt`, `quit`.
+`timeline`, `audio`, `hotreload`, `gpubelt`, `quit`. A key bound to `simmode` cycles the mode; one bound to a
+slider resets it to its default.
 
 > Note: `Ctrl+B` is intentionally **not** used — it collides with system hotkeys on some platforms, so bookmarks use `Ctrl+E`.
 
@@ -456,7 +469,7 @@ search away in `Ctrl+K`, and any id can be bound in `data/keybindings.json`.
 
 | File | Contents |
 |---|---|
-| `%AppData%/SolarSystem/state.json` | Camera, sim time, speed, focus index, help mode, language, active settings tab, and `Features: {id: bool}` for every persistable registry toggle (pause, scale mode, every visual switch…). Pre-registry saves (one PascalCase bool per toggle) are migrated on first load. |
+| `%AppData%/SolarSystem/state.json` | Camera, sim time, speed, focus index, help mode, language, active settings tab, `Features: {id: bool}` for every persistable registry toggle (pause, scale mode, every visual switch…), `Choices: {id: index}` for selectors (`simmode`), and a `Physics` section (`G`, `SunMassScale`, `GravityExponent`, `SpeedOfLightScale`, `BodyMassScale`). Pre-registry saves (one PascalCase bool per toggle) are migrated on first load; `nbody = true` becomes Physics mode. |
 | `%AppData%/SolarSystem/campath.json` | The 9 camera-path waypoint slots. |
 | `data/planets.json` | Major + dwarf planet Keplerian elements (optional override). |
 | `data/comets.json` | Comet catalogue (S16). |

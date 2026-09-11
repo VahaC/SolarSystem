@@ -31,6 +31,10 @@ uniform int uHasAtmosphere;
 uniform vec3 uAtmosphereColor;
 uniform float uAtmosphereStrength;
 
+// Physics sandbox (Compare mode): translucent "ghost" copies of each body at
+// its ephemeris position are drawn with uAlpha ~ 0.3; normal bodies use 1.0.
+uniform float uAlpha;
+
 // Returns the maximum occlusion fraction (0=lit, 1=fully shadowed) caused by any
 // other body intersecting the segment from `origin` to `lightPos`. Soft penumbra
 // from a smoothstep around the silhouette; the shaded body itself is skipped.
@@ -164,5 +168,5 @@ void main(){
         scatter += vec3(1.0, 0.95, 0.85) * mie * 0.004 * sunFacing * rim * uAtmosphereStrength;
         color += scatter * eclipse;
     }
-    fragColor = vec4(color, 1.0);
+    fragColor = vec4(color, uAlpha);
 }

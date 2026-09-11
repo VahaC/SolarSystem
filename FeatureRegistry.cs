@@ -21,6 +21,8 @@ public sealed class FeatureRegistry
     public IReadOnlyList<FeaturePreset> Presets => _presets;
     public IEnumerable<Feature> Features => _entries.OfType<Feature>();
     public IEnumerable<Command> Commands => _entries.OfType<Command>();
+    public IEnumerable<Choice> Choices => _entries.OfType<Choice>();
+    public IEnumerable<Slider> Sliders => _entries.OfType<Slider>();
 
     /// <summary>Categories whose features are touched by presets and "reset".</summary>
     public static readonly FeatureCategory[] SceneCategories =
@@ -46,6 +48,10 @@ public sealed class FeatureRegistry
 
     public Entry? Find(string id) => _byId.TryGetValue(id, out var e) ? e : null;
     public Feature? FindFeature(string id) => Find(id) as Feature;
+    public Choice? FindChoice(string id) => Find(id) as Choice;
+    public Slider? FindSlider(string id) => Find(id) as Slider;
+    public IEnumerable<Choice> ChoicesIn(FeatureCategory cat)
+        => Choices.Where(c => c.Category == cat);
 
     public IEnumerable<Feature> FeaturesIn(FeatureCategory cat)
         => Features.Where(f => f.Category == cat);
@@ -97,6 +103,27 @@ public sealed class FeatureRegistry
                     return;
                 }
                 c.Run();
+                break;
+            case Choice ch:
+                if (!ch.IsAvailable)
+                {
+                    string? why = ch.Unavailable?.Invoke();
+                    if (why != null) banner?.Invoke(Localization.T(why));
+                    return;
+                }
+                ch.Cycle(1);
+                string? ctext = ch.Banner?.Invoke(ch.Value) ?? $"{ch.Label}: {ch.ValueLabel}";
+                if (ctext.Length > 0) banner?.Invoke(ctext);
+                break;
+            case Slider s:
+                if (!s.IsAvailable)
+                {
+                    string? why = s.Unavailable?.Invoke();
+                    if (why != null) banner?.Invoke(Localization.T(why));
+                    return;
+                }
+                s.ResetToDefault();
+                banner?.Invoke(Localization.T("ui.slider.reset", s.Label, s.ValueText));
                 break;
         }
     }
@@ -196,6 +223,25 @@ public sealed class FeatureRegistry
         }
     }
 
+    /// <summary>Snapshot every persistable choice as <c>id → option index</c>.</summary>
+    public Dictionary<string, int> SnapshotChoices()
+    {
+        var d = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var c in Choices)
+            if (c.Persist) d[c.Id] = c.Value;
+        return d;
+    }
+
+    /// <summary>Apply saved choice indices (unknown ids ignored, missing ones kept).</summary>
+    public void RestoreChoices(IReadOnlyDictionary<string, int> values)
+    {
+        foreach (var c in Choices)
+        {
+            if (!c.Persist) continue;
+            if (values.TryGetValue(c.Id, out int v)) c.Apply(v);
+        }
+    }
+
     /// <summary>One-shot migration from the pre-registry <c>state.json</c>
     /// layout (one PascalCase bool property per toggle). Reads the raw document
     /// so no DTO has to keep the old properties alive.</summary>
@@ -215,10 +261,12 @@ public sealed class FeatureRegistry
 
     // ---- Presets / reset -----------------------------------------------------------
 
-    /// <summary>Reset every feature in <paramref name="cat"/> to its default.</summary>
+    /// <summary>Reset every feature and choice in <paramref name="cat"/> to its default.
+    /// Sliders are deliberately left alone — they have their own reset commands.</summary>
     public void ResetCategory(FeatureCategory cat)
     {
         foreach (var f in FeaturesIn(cat)) f.Apply(f.Default);
+        foreach (var c in ChoicesIn(cat)) c.Apply(c.Default);
     }
 
     /// <summary>Set every feature in <paramref name="cat"/> to <paramref name="value"/>.</summary>
@@ -233,6 +281,8 @@ public sealed class FeatureRegistry
         foreach (var cat in SceneCategories) ResetCategory(cat);
         foreach (var (id, v) in preset.Overrides)
             FindFeature(id)?.Apply(v);
+        foreach (var (id, v) in preset.Choices)
+            FindChoice(id)?.Apply(v);
     }
 
     /// <summary>True when the current scene-category state equals what
@@ -240,12 +290,20 @@ public sealed class FeatureRegistry
     public bool MatchesPreset(FeaturePreset preset)
     {
         foreach (var cat in SceneCategories)
+        {
             foreach (var f in FeaturesIn(cat))
             {
                 if (!f.IsAvailable) continue;
                 bool expected = preset.Overrides.TryGetValue(f.Id, out bool o) ? o : f.Default;
                 if (f.Value != expected) return false;
             }
+            foreach (var c in ChoicesIn(cat))
+            {
+                if (!c.IsAvailable) continue;
+                int expected = preset.Choices.TryGetValue(c.Id, out int o) ? o : c.Default;
+                if (c.Value != expected) return false;
+            }
+        }
         return true;
     }
 

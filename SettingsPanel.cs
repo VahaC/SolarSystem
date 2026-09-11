@@ -23,6 +23,8 @@ public sealed class SettingsPanel
     public abstract class Row
     {
         public required string Label;
+        /// <summary>Dynamic label (already localised); wins over <see cref="Label"/>.</summary>
+        public Func<string>? LabelFn;
         public FeatureCategory Category = FeatureCategory.Bodies;
         /// <summary>Right-aligned hint, typically the hotkey chord.</summary>
         public string Hint = "";
@@ -49,7 +51,12 @@ public sealed class SettingsPanel
         public required Action<float> Set;
         public float Min;
         public float Max;
+        /// <summary>Nudge per −/+ click: additive, or a multiplicative factor when
+        /// <see cref="LogScale"/> is on.</summary>
         public float Step;
+        /// <summary>Logarithmic track between <see cref="Min"/> and <see cref="Max"/>
+        /// (both &gt; 0), for multipliers such as 0.01×…100×.</summary>
+        public bool LogScale;
         public string Format = "{0:0.##}";
         /// <summary>Pixel rectangle of the rendered <c>[████░░░]</c> bar — used
         /// for click→value mapping so the cursor lines up with the visible cells
@@ -63,6 +70,17 @@ public sealed class SettingsPanel
     {
         public required Action Run;
         public Func<string>? Status;
+    }
+
+    /// <summary>A multi-option selector rendered as <c>label   ◂ value ▸</c>. The
+    /// arrows reuse the slider's <see cref="Row.Minus"/> / <see cref="Row.Plus"/> hit
+    /// boxes; a click anywhere else on the row advances to the next option.</summary>
+    public sealed class ChoiceRow : Row
+    {
+        /// <summary>Current option label (already localised).</summary>
+        public required Func<string> ValueLabel;
+        /// <summary>Move by ±1 option (wrapping).</summary>
+        public required Action<int> Cycle;
     }
 
     public struct Box(float x, float y, float w, float h)
@@ -84,8 +102,9 @@ public sealed class SettingsPanel
     /// <summary>Tabs shown in the header, in order.</summary>
     public IReadOnlyList<FeatureCategory> Tabs { get; set; } = new[]
     {
-        FeatureCategory.Bodies, FeatureCategory.Simulation, FeatureCategory.Effects,
-        FeatureCategory.PostFx, FeatureCategory.Interface, FeatureCategory.Developer,
+        FeatureCategory.Bodies, FeatureCategory.Simulation, FeatureCategory.Masses,
+        FeatureCategory.Effects, FeatureCategory.PostFx, FeatureCategory.Interface,
+        FeatureCategory.Developer,
     };
 
     public IReadOnlyList<FeaturePreset> Presets { get; set; } = Array.Empty<FeaturePreset>();
@@ -129,26 +148,42 @@ public sealed class SettingsPanel
                 if (b.IsAvailable) b.Run();
                 return true;
             }
+            if (row is ChoiceRow c && c.Bounds.Contains(mouse))
+            {
+                if (c.IsAvailable) c.Cycle(c.Minus.Contains(mouse) ? -1 : +1);
+                return true;
+            }
             if (row is SliderRow s)
             {
+                bool hit = s.Minus.Contains(mouse) || s.Plus.Contains(mouse)
+                           || (s.Track.W > 0f && s.Track.Contains(mouse));
+                if (!hit) continue;
+                // Greyed-out sliders (e.g. physics constants in ephemeris mode) swallow the
+                // click so it doesn't fall through to the camera, but change nothing.
+                if (!s.IsAvailable) return true;
                 if (s.Minus.Contains(mouse))
                 {
-                    s.Set(MathHelper.Clamp(s.Get() - s.Step, s.Min, s.Max));
+                    float v = s.LogScale ? s.Get() / s.Step : s.Get() - s.Step;
+                    s.Set(MathHelper.Clamp(v, s.Min, s.Max));
                     return true;
                 }
                 if (s.Plus.Contains(mouse))
                 {
-                    s.Set(MathHelper.Clamp(s.Get() + s.Step, s.Min, s.Max));
-                    return true;
-                }
-                if (s.Track.W > 0f && s.Track.Contains(mouse))
-                {
-                    float t01 = MathHelper.Clamp((mouse.X - s.Track.X) / MathF.Max(1f, s.Track.W), 0f, 1f);
-                    float v = s.Min + (s.Max - s.Min) * t01;
-                    if (s.Step > 0f) v = MathF.Round(v / s.Step) * s.Step;
+                    float v = s.LogScale ? s.Get() * s.Step : s.Get() + s.Step;
                     s.Set(MathHelper.Clamp(v, s.Min, s.Max));
                     return true;
                 }
+                float t01 = MathHelper.Clamp((mouse.X - s.Track.X) / MathF.Max(1f, s.Track.W), 0f, 1f);
+                if (s.LogScale)
+                {
+                    float lv = s.Min * MathF.Pow(s.Max / s.Min, t01);
+                    s.Set(MathHelper.Clamp(lv, s.Min, s.Max));
+                    return true;
+                }
+                float value = s.Min + (s.Max - s.Min) * t01;
+                if (s.Step > 0f) value = MathF.Round(value / s.Step) * s.Step;
+                s.Set(MathHelper.Clamp(value, s.Min, s.Max));
+                return true;
             }
         }
         // Click anywhere else inside the panel rectangle — consume but do nothing
@@ -373,20 +408,21 @@ public sealed class SettingsPanel
             bool hot = row.Bounds.Contains(mouse);
             if (hot) { hovered = row; renderer.FillRect(row.Bounds.X - 4f, row.Bounds.Y, row.Bounds.W + 8f, row.Bounds.H, HoverBg); }
             bool available = row.IsAvailable;
-            string label = Localization.T(row.Label);
+            string label = row.LabelFn?.Invoke() ?? Localization.T(row.Label);
             var col = !available ? OffColor : hot ? HotColor : RowColor;
             float rowX = panelX + Pad;
+            string unavailableWhy = (!available && row.Unavailable != null)
+                ? Localization.T(row.Unavailable()!) : "";
 
             if (row is ToggleRow t)
             {
                 bool on = available && t.Get();
                 renderer.DrawText(font, on ? "[x]" : "[ ]", rowX, ry, PixelSize, on ? OnMark : col);
                 renderer.DrawText(font, label, rowX + 30f, ry, PixelSize, col);
-                if (!available && row.Unavailable != null)
+                if (unavailableWhy.Length > 0)
                 {
-                    string why = Localization.T(row.Unavailable()!);
                     float lw = font.MeasureWidth(label, PixelSize);
-                    renderer.DrawText(font, "  — " + why, rowX + 30f + lw, ry, 11f, OffColor);
+                    renderer.DrawText(font, "  — " + unavailableWhy, rowX + 30f + lw, ry, 11f, OffColor);
                 }
             }
             else if (row is ButtonRow b)
@@ -400,10 +436,30 @@ public sealed class SettingsPanel
                     renderer.DrawText(font, "  " + status, rowX + 30f + lw, ry, 12f, DimColor);
                 }
             }
+            else if (row is ChoiceRow c)
+            {
+                string value = c.ValueLabel();
+                string prefix = $"{label}  ";
+                string left = "◂ ";
+                string right = " ▸";
+                float prefixW = font.MeasureWidth(prefix, PixelSize);
+                float leftW = font.MeasureWidth(left, PixelSize);
+                float valueW = font.MeasureWidth(value, PixelSize);
+                float rightW = font.MeasureWidth(right, PixelSize);
+                c.Minus = new Box(rowX + prefixW, rowTop, leftW, LineH);
+                c.Plus = new Box(rowX + prefixW + leftW + valueW, rowTop, rightW, LineH);
+                renderer.DrawText(font, prefix, rowX, ry, PixelSize, col);
+                renderer.DrawText(font, left + value + right, rowX + prefixW, ry, PixelSize,
+                    !available ? OffColor : OnMark);
+                if (unavailableWhy.Length > 0)
+                    renderer.DrawText(font, "  — " + unavailableWhy, rowX + prefixW + leftW + valueW + rightW, ry, 11f, OffColor);
+            }
             else if (row is SliderRow s)
             {
                 float v = s.Get();
-                float t01 = MathHelper.Clamp((v - s.Min) / MathF.Max(1e-6f, s.Max - s.Min), 0f, 1f);
+                float t01 = s.LogScale && s.Min > 0f && s.Max > s.Min
+                    ? MathHelper.Clamp(MathF.Log(MathF.Max(v, 1e-12f) / s.Min) / MathF.Log(s.Max / s.Min), 0f, 1f)
+                    : MathHelper.Clamp((v - s.Min) / MathF.Max(1e-6f, s.Max - s.Min), 0f, 1f);
                 const int Cells = 12;
                 int filled = (int)MathF.Round(t01 * Cells);
                 var bar = new System.Text.StringBuilder();
@@ -427,7 +483,10 @@ public sealed class SettingsPanel
                 s.Minus = new Box(rowX + prefixW, rowTop, minusW, LineH);
                 s.Track = new Box(rowX + prefixW + minusW + openW, rowTop, barW, LineH);
                 s.Plus  = new Box(rowX + prefixW + minusW + openW + barW + closeW2, rowTop, plusW, LineH);
-                renderer.DrawText(font, prefix + minus + open + barStr + close2 + plus + value, rowX, ry, PixelSize, col);
+                string full = prefix + minus + open + barStr + close2 + plus + value;
+                renderer.DrawText(font, full, rowX, ry, PixelSize, col);
+                if (unavailableWhy.Length > 0)
+                    renderer.DrawText(font, "  — " + unavailableWhy, rowX + font.MeasureWidth(full, PixelSize), ry, 11f, OffColor);
             }
 
             // Right-aligned hotkey hint.
@@ -465,12 +524,9 @@ public sealed class SettingsPanel
     private static void ZeroBounds(Row row)
     {
         row.Bounds = Box.Empty;
-        if (row is SliderRow sk)
-        {
-            sk.Minus = Box.Empty;
-            sk.Plus = Box.Empty;
-            sk.Track = Box.Empty;
-        }
+        row.Minus = Box.Empty;
+        row.Plus = Box.Empty;
+        if (row is SliderRow sk) sk.Track = Box.Empty;
     }
 
     /// <summary>Draw a small text button; returns the x coordinate just past it.</summary>

@@ -219,6 +219,86 @@ public class SettingsPanelTests
     }
 
     [Fact]
+    public void SliderRow_LogScale_MapsTrackAndNudgesMultiplicatively()
+    {
+        float v = 1f;
+        var p = new SettingsPanel { Visible = true };
+        var slider = new SettingsPanel.SliderRow
+        {
+            Label = "g", Get = () => v, Set = nv => v = nv,
+            Min = 0.01f, Max = 100f, Step = 10f, LogScale = true,
+        };
+        p.Add(slider);
+        slider.Minus = new SettingsPanel.Box(0, 0, 10, 10);
+        slider.Plus  = new SettingsPanel.Box(20, 0, 10, 10);
+        slider.Track = new SettingsPanel.Box(40, 0, 100, 10);
+
+        Assert.True(p.TryHandleClick(new Vector2(25, 5)));   // plus: ×10
+        Assert.Equal(10f, v, 4);
+        Assert.True(p.TryHandleClick(new Vector2(5, 5)));    // minus: ÷10
+        Assert.Equal(1f, v, 4);
+        // Track midpoint of a 0.01…100 log track is 1.0; far left / right snap to the ends.
+        Assert.True(p.TryHandleClick(new Vector2(40 + 50, 5)));
+        Assert.Equal(1f, v, 3);
+        Assert.True(p.TryHandleClick(new Vector2(40 + 100, 5)));
+        Assert.Equal(100f, v, 3);
+        Assert.True(p.TryHandleClick(new Vector2(40, 5)));
+        Assert.Equal(0.01f, v, 4);
+        for (int i = 0; i < 10; i++) p.TryHandleClick(new Vector2(5, 5));
+        Assert.Equal(0.01f, v, 4);                           // clamped at Min
+    }
+
+    [Fact]
+    public void SliderRow_Unavailable_SwallowsClickWithoutChanging()
+    {
+        float v = 3f;
+        var p = new SettingsPanel { Visible = true };
+        var slider = new SettingsPanel.SliderRow
+        {
+            Label = "g", Get = () => v, Set = nv => v = nv, Min = 0f, Max = 10f, Step = 1f,
+            Unavailable = () => "ui.unavailable.ephemeris",
+        };
+        p.Add(slider);
+        slider.Plus = new SettingsPanel.Box(20, 0, 10, 10);
+        slider.Track = new SettingsPanel.Box(40, 0, 100, 10);
+        Assert.True(p.TryHandleClick(new Vector2(25, 5)));
+        Assert.True(p.TryHandleClick(new Vector2(90, 5)));
+        Assert.Equal(3f, v);
+    }
+
+    [Fact]
+    public void ChoiceRow_ArrowsCycleBothWays_RowBodyAdvances()
+    {
+        int idx = 0;
+        var p = new SettingsPanel { Visible = true };
+        var row = new SettingsPanel.ChoiceRow
+        {
+            Label = "mode",
+            ValueLabel = () => idx.ToString(),
+            Cycle = d => idx = ((idx + d) % 3 + 3) % 3,
+        };
+        p.Add(row);
+        row.Bounds = new SettingsPanel.Box(0, 0, 200, 22);
+        row.Minus = new SettingsPanel.Box(100, 0, 10, 22);
+        row.Plus = new SettingsPanel.Box(130, 0, 10, 22);
+        Assert.True(p.TryHandleClick(new Vector2(135, 10))); Assert.Equal(1, idx);
+        Assert.True(p.TryHandleClick(new Vector2(105, 10))); Assert.Equal(0, idx);
+        Assert.True(p.TryHandleClick(new Vector2(105, 10))); Assert.Equal(2, idx);
+        Assert.True(p.TryHandleClick(new Vector2(20, 10)));  Assert.Equal(0, idx); // anywhere else: next
+        row.Unavailable = () => "ui.unavailable.ephemeris";
+        Assert.True(p.TryHandleClick(new Vector2(135, 10))); Assert.Equal(0, idx);
+    }
+
+    [Fact]
+    public void Tabs_IncludeMasses_AfterSimulation()
+    {
+        var p = new SettingsPanel();
+        int sim = p.Tabs.ToList().IndexOf(FeatureCategory.Simulation);
+        Assert.Equal(FeatureCategory.Masses, p.Tabs[sim + 1]);
+        Assert.Equal(FeatureCategory.Developer, p.Tabs[^1]);
+    }
+
+    [Fact]
     public void CycleTab_WrapsAroundBothWays()
     {
         var p = new SettingsPanel { ActiveTab = FeatureCategory.Bodies };

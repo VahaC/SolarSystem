@@ -56,10 +56,44 @@ public sealed class SolarSystemWindow : GameWindow
     // S16: catalogue-driven set of comets (Halley, Hale-Bopp, NEOWISE, Encke, ...).
     private readonly Comets _comets = new();
     private readonly Constellations _constellations = new();
-    // S13 / S14 / S15.
+    // S13 / S14.
     private readonly TidalLock _tidalLock = new();
     private readonly PlanetaryAlignment _alignment = new();
-    private readonly NBodyIntegrator _nbody = new();
+    // Physics sandbox: one N-body world for every massive body (replaces the S15
+    // majors-only integrator). Built in OnLoad from the same Planet / Moon records
+    // the renderer uses; seeded from the ephemerides when the mode leaves Ephemeris.
+    private readonly PhysicsConstants _physConst = new();
+    private PhysicsWorld _world = null!;
+    private SimulationMode _simMode = SimulationMode.Ephemeris;
+    /// <summary>Pending seek target (days since J2000) while a jump is being integrated
+    /// in per-frame chunks; null when the physics clock is caught up.</summary>
+    private double? _physicsTarget;
+    private bool _showPhysicsHud;
+    // Collisions (physics modes): mirrored into PhysicsWorld.CollisionsEnabled; how many
+    // world events have already been turned into banners / flashes; running impact
+    // flashes (unified body index of the survivor, wall-clock start); world -> unified
+    // index map so a collision can retarget focus / selection.
+    private bool _collisionsEnabled = true;
+    private int _announcedCollisions;
+    private readonly List<(int body, double start)> _impactFlashes = new();
+    private const double ImpactFlashSeconds = 3.0;
+    private readonly Dictionary<int, int> _worldToUnified = new();
+    private int[] _worldExtraIdx = [];
+    private Planet[] _alignmentPlanets = [];
+    /// <summary>Per-frame CPU budget for the integrator so a 100-year seek is spread
+    /// over many frames instead of freezing the UI (headless renders are unbounded).</summary>
+    private const int PhysicsMaxStepsPerFrame = 2000;
+    private const double PhysicsFrameBudgetMs = 8.0;
+    // World indices of the render bodies (-1 = not integrated).
+    private int[] _worldPlanetIdx = [];
+    private int _worldMoonIdx = -1;
+    private int[] _worldMoonsIdx = [];
+    private int[] _worldCometIdx = [];
+    // Compare mode: ephemeris ("ghost") world positions refreshed every frame.
+    private Vector3[] _ghostPlanets = [];
+    private Vector3 _ghostMoon;
+    private Vector3[] _ghostMoons = [];
+    private Vector3[] _ghostComets = [];
     // S9–S12.
     private readonly Probes _probes = new();
     private readonly LagrangePoints _lagrange = new();
@@ -163,12 +197,6 @@ public sealed class SolarSystemWindow : GameWindow
     private bool _showTidalLock;
     /// <summary>S14: heliocentric-alignment indicator (line + banner when ≥3 planets are within ~12°).</summary>
     private bool _showAlignment = true;
-    /// <summary>S15: switch the major-planet update path from analytic Kepler to a
-    /// leapfrog N-body integrator that includes mutual gravity.</summary>
-    private bool _nbodyEnabled;
-    /// <summary>S15: set whenever sim time jumps far enough that the integrator
-    /// state must be re-snapshot from the analytic Kepler positions on the next frame.</summary>
-    private bool _nbodyDirty;
     /// <summary>R4: when true each planet's spin angle is evaluated at
     /// <c>simDays - r/c</c> (where r is its heliocentric distance), so the day/night
     /// terminator falls where it was when the photons currently illuminating it
@@ -340,6 +368,10 @@ public sealed class SolarSystemWindow : GameWindow
         _camera.Aspect = ClientSize.X / (float)ClientSize.Y;
         _camera.ResetDefault();
 
+        // Physics sandbox: build the N-body world over the same render bodies. It is
+        // only seeded (Initialize) when the mode leaves Ephemeris, so this is cheap.
+        BuildPhysicsWorld();
+
         // Feature registry first: the settings panel, the toolbar, the key map,
         // the palette and the persisted-state loader are all derived from it.
         BuildFeatureRegistry();
@@ -360,6 +392,18 @@ public sealed class SolarSystemWindow : GameWindow
             if (Headless.RealScale != OrbitalMechanics.RealScale) ToggleRealScale();
             _paused = true;          // suppress the args.Time-based _simDays advance
             _simDays = Headless.FromSimDays;
+            _physicsTarget = null;
+            // --physics forces Physics mode (otherwise the persisted mode applies).
+            // Either way a physics world is (re)seeded at the first frame — the
+            // persisted state may already have seeded it at the saved date — and then
+            // integrates exactly DaysPerFrame per frame with no CPU budget, so the
+            // export is deterministic.
+            if (Headless.Physics) SetSimulationMode(SimulationMode.Physics);
+            if (_simMode != SimulationMode.Ephemeris)
+            {
+                SeedPhysics();
+                ClearAllTrails();
+            }
             try { Directory.CreateDirectory(Headless.OutDir); } catch { /* surfaces below on save */ }
             Console.WriteLine($"[render] {Headless.TotalFrames} frames @ dt={Headless.DaysPerFrame} d/frame -> {Headless.OutDir}");
         }
@@ -419,15 +463,20 @@ public sealed class SolarSystemWindow : GameWindow
             var newDays = _scrubber.UpdateDrag(_mousePos);
             if (newDays.HasValue)
             {
-                if (Math.Abs(newDays.Value - _simDays) > 0.5)
+                if (Math.Abs(newDays.Value - TargetSimDays) > 0.5)
                 {
-                    _simDays = newDays.Value;
+                    SetSimTime(newDays.Value);
                     ClearAllTrails();
                 }
             }
         }
-        else if (!_paused)
+        else if (!_paused && _physicsTarget == null)
             _simDays += _daysPerSecond * args.Time;
+
+        // Physics sandbox: integrate the world up to the requested time (or toward a
+        // pending seek target, in per-frame chunks) and let the physics clock define
+        // the frame's sim time. In Ephemeris mode nothing here runs.
+        if (_simMode != SimulationMode.Ephemeris) AdvancePhysics();
 
         // Q10: camera-path playback drives Yaw/Pitch/Distance/Target directly,
         // so the per-frame "follow focused body" branch is suppressed below.
@@ -436,22 +485,17 @@ public sealed class SolarSystemWindow : GameWindow
         // Update positions and axial rotation
         const double TwoPi = Math.PI * 2.0;
 
-        // S15: when N-body mode is on, the major planets are advanced by the
-        // leapfrog integrator (mutual gravity) instead of pure analytic Kepler.
-        // Dwarfs / moons / comets still ride analytic Kepler — they don't
-        // perturb the majors meaningfully and switching them off is the most
-        // useful "perturbation visible" comparison.
-        if (_nbodyEnabled)
-        {
-            if (_nbodyDirty) { _nbody.Resync(_majorPlanets, _simDays); _nbodyDirty = false; }
-            else _nbody.Step(_majorPlanets, _simDays);
-        }
+        // Physics / Compare: every planet and dwarf takes its heliocentric position
+        // from the N-body world; Ephemeris keeps the analytic Kepler solve.
+        bool physicsDriven = _simMode != SimulationMode.Ephemeris;
+        double lightDaysPerAU = physicsDriven ? _world.LightDaysPerAU : LightDaysPerAU;
 
         for (int pi = 0; pi < _planets.Length; pi++)
         {
             var p = _planets[pi];
-            bool nbodyDriven = _nbodyEnabled && pi < _dwarfStart;
-            if (!nbodyDriven)
+            if (physicsDriven && _worldPlanetIdx[pi] >= 0)
+                p.HelioAU = _world.HeliocentricPosition(_worldPlanetIdx[pi]);
+            else
                 p.HelioAU = OrbitalMechanics.HeliocentricPosition(p, _simDays);
             float s = OrbitalMechanics.OrbitWorldScale(p.SemiMajorAxisAU);
             p.Position = new Vector3(
@@ -467,7 +511,7 @@ public sealed class SolarSystemWindow : GameWindow
                 double rAU = Math.Sqrt(p.HelioAU.X * p.HelioAU.X
                                        + p.HelioAU.Y * p.HelioAU.Y
                                        + p.HelioAU.Z * p.HelioAU.Z);
-                rotDays -= rAU * LightDaysPerAU;
+                rotDays -= rAU * lightDaysPerAU;
             }
             if (p.RotationPeriodHours != 0.0)
             {
@@ -496,30 +540,20 @@ public sealed class SolarSystemWindow : GameWindow
         // alignment that drives eclipses is preserved by normalising before scaling.
         {
             var earth = _planets[2];
-            var lunar = LunarEphemeris.Compute(_simDays);
-            double lonRad = lunar.LongitudeDeg * OrbitalMechanics.DegToRad;
-            double latRad = lunar.LatitudeDeg * OrbitalMechanics.DegToRad;
-            double cosB = Math.Cos(latRad);
-            // Geocentric ecliptic Cartesian (km), then mapped to world (x, z, -y).
-            double mx = lunar.DistanceKm * cosB * Math.Cos(lonRad);
-            double my = lunar.DistanceKm * cosB * Math.Sin(lonRad);
-            double mz = lunar.DistanceKm * Math.Sin(latRad);
-            Vector3 moonOffsetKm = new((float)mx, (float)mz, (float)-my);
-
-            Vector3 offset;
-            if (OrbitalMechanics.RealScale)
+            if (physicsDriven && _worldMoonIdx >= 0)
             {
-                offset = moonOffsetKm * (float)OrbitalMechanics.KmToWorldRealScale;
+                // Physics: the integrated geocentric offset, drawn to scale in real-scale
+                // mode and radially stretched around the artistic radius otherwise, so a
+                // Moon spiralling in or out under altered constants is visible.
+                var offAU = _world.AbsolutePosition(_worldMoonIdx) - _world.AbsolutePosition(_worldPlanetIdx[2]);
+                _moon.Position = earth.Position + PhysicsSatelliteOffsetWorld(offAU, MoonOrbitRadius, PhysicsWorld.MoonOrbitRadiusKm);
+                _moon.HelioAU = _world.HeliocentricPosition(_worldMoonIdx);
             }
             else
             {
-                Vector3 dir = moonOffsetKm.LengthSquared > 1e-6f
-                    ? Vector3.Normalize(moonOffsetKm)
-                    : Vector3.UnitX;
-                offset = dir * MoonOrbitRadius;
+                _moon.Position = earth.Position + EphemerisMoonOffsetWorld(_simDays);
+                _moon.HelioAU = earth.HelioAU; // info-panel "distance from Sun" approximation
             }
-            _moon.Position = earth.Position + offset;
-            _moon.HelioAU = earth.HelioAU; // info-panel "distance from Sun" approximation
             double mAngle = (_simDays * 24.0 / _moon.RotationPeriodHours) * TwoPi;
             mAngle %= TwoPi;
             if (mAngle < 0) mAngle += TwoPi;
@@ -534,37 +568,21 @@ public sealed class SolarSystemWindow : GameWindow
         // it, and Saturn is too far away for naked-eye occultation effects to
         // matter at this scale.
         var galilean = GalileanEphemeris.MeanLongitudes(_simDays);
-        foreach (var m in _moons)
+        for (int mi = 0; mi < _moons.Length; mi++)
         {
+            var m = _moons[mi];
             var host = _planets[m.HostPlanetIndex];
-            float r = OrbitalMechanics.RealScale
-                ? (float)(m.RealOrbitRadiusKm * OrbitalMechanics.KmToWorldRealScale)
-                : m.ArtisticOrbitRadius;
-
-            double angle;
-            switch (m.Body.Name)
+            if (physicsDriven && _worldMoonsIdx[mi] >= 0)
             {
-                case "Io":       angle = galilean.Io       * OrbitalMechanics.DegToRad; break;
-                case "Europa":   angle = galilean.Europa   * OrbitalMechanics.DegToRad; break;
-                case "Ganymede": angle = galilean.Ganymede * OrbitalMechanics.DegToRad; break;
-                case "Callisto": angle = galilean.Callisto * OrbitalMechanics.DegToRad; break;
-                default: // Titan and any future non-Galilean satellite.
-                    angle = (_simDays / m.OrbitalPeriodDays) * TwoPi
-                            + m.PhaseDeg * OrbitalMechanics.DegToRad;
-                    break;
+                var offAU = _world.AbsolutePosition(_worldMoonsIdx[mi]) - _world.AbsolutePosition(_worldPlanetIdx[m.HostPlanetIndex]);
+                m.Body.Position = host.Position + PhysicsSatelliteOffsetWorld(offAU, m.ArtisticOrbitRadius, m.RealOrbitRadiusKm);
+                m.Body.HelioAU = _world.HeliocentricPosition(_worldMoonsIdx[mi]);
             }
-
-            // Negate the Z component so the moon orbits prograde (CCW as viewed from
-            // the host's north pole, +Y), matching every real major satellite in the
-            // solar system. Without the flip the (cos, sin) parametrisation runs
-            // clockwise in our world-axis convention (X=east, -Z=north).
-            float cx = (float)Math.Cos(angle) * r;
-            float cz = -(float)Math.Sin(angle) * r;
-            float incl = MathHelper.DegreesToRadians(m.OrbitInclinationDeg);
-            float cy = cz * MathF.Sin(incl);
-            cz *= MathF.Cos(incl);
-            m.Body.Position = host.Position + new Vector3(cx, cy, cz);
-            m.Body.HelioAU = host.HelioAU;
+            else
+            {
+                m.Body.Position = host.Position + EphemerisSatelliteOffsetWorld(m, galilean, _simDays);
+                m.Body.HelioAU = host.HelioAU;
+            }
             if (m.Body.RotationPeriodHours != 0.0)
             {
                 double a = (_simDays * 24.0 / m.Body.RotationPeriodHours) * TwoPi;
@@ -579,12 +597,13 @@ public sealed class SolarSystemWindow : GameWindow
         // trail doesn't degenerate into a single multi-stamped point.
         if (!_paused && _showTrails)
         {
-            foreach (var p in _planets)
+            for (int pi = 0; pi < _planets.Length; pi++)
             {
+                if (!WorldAlive(_worldPlanetIdx[pi])) continue;
                 // A small absolute spacing keeps trails visible at slow sim speeds while
                 // the ring buffer still drops old samples once full at high speeds.
                 float spacing = OrbitalMechanics.RealScale ? 0.0005f : 0.01f;
-                p.TrailPush(p.Position, spacing);
+                _planets[pi].TrailPush(_planets[pi].Position, spacing);
             }
         }
 
@@ -620,14 +639,31 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Asteroid belt + comet position track sim time even when paused (positions are
         // a pure function of _simDays, not an integration), so they stay correctly
-        // placed after a date jump or while the simulation is frozen.
-        _belt.Update(_simDays);
-        _comets.UpdatePosition(_simDays);
+        // placed after a date jump or while the simulation is frozen. In the physics
+        // modes both are test particles riding the field the world recorded this frame.
+        if (physicsDriven)
+        {
+            _belt.UpdatePhysics(_world);
+            for (int ci = 0; ci < _comets.All.Length; ci++)
+            {
+                if (_worldCometIdx[ci] >= 0)
+                    _comets.All[ci].ApplyHelioAU(_world.HeliocentricPosition(_worldCometIdx[ci]), _simDays);
+                else
+                    _comets.All[ci].UpdatePosition(_simDays);
+            }
+            if (_simMode == SimulationMode.Compare) ComputeGhostPositions(galilean);
+        }
+        else
+        {
+            _belt.Update(_simDays);
+            _comets.UpdatePosition(_simDays);
+        }
         _comets.UpdateTail(fxDt, Vector3.Zero);
 
         // S14: recompute alignment groups from the freshly-updated positions.
         _alignment.Enabled = _showAlignment;
-        _alignment.Update(_majorPlanets);
+        _alignmentPlanets = AliveSubset(_majorPlanets);
+        _alignment.Update(_alignmentPlanets);
         _tidalLock.Enabled = _showTidalLock;
 
         // S9–S11: probes / Lagrange points / meteor showers. All read the planets
@@ -785,7 +821,8 @@ public sealed class SolarSystemWindow : GameWindow
 
         // Choose between the full body list (planets + dwarfs) and the major-only
         // slice in one place so every render pass sees a consistent view.
-        Planet[] visible = _showDwarfs ? _planets : _majorPlanets;
+        // Bodies absorbed in a physics collision drop out of every pass as well.
+        Planet[] visible = AliveSubset(_showDwarfs ? _planets : _majorPlanets);
 
         // V8: build the shadow caster list (planets + Moon + Galileans + Titan).
         // The Sun is the light source so it never casts. Capped at 16 by the renderer.
@@ -802,7 +839,8 @@ public sealed class SolarSystemWindow : GameWindow
         if (_showOrbits)
         {
             _renderer.DrawOrbits(_camera, visible);
-            _renderer.DrawCometOrbits(_camera, _comets);
+            for (int ci = 0; ci < _comets.All.Length; ci++)
+                if (ExtraAlive(1 + _moons.Length + ci)) _renderer.DrawCometOrbit(_camera, _comets.All[ci]);
         }
         if (_showTrails) _renderer.DrawTrails(_camera, visible);
         _profiler.EndPass();
@@ -811,11 +849,11 @@ public sealed class SolarSystemWindow : GameWindow
         _renderer.DrawSun(_camera, Vector3.Zero, SunRadius);
         foreach (var p in visible)
             _renderer.DrawPlanet(_camera, p, Vector3.Zero);
-        _renderer.DrawPlanet(_camera, _moon, Vector3.Zero);
-        foreach (var m in _moons)
-            _renderer.DrawPlanet(_camera, m.Body, Vector3.Zero);
-        foreach (var c in _comets.All)
-            _renderer.DrawPlanet(_camera, c.Body, Vector3.Zero);
+        if (WorldAlive(_worldMoonIdx)) _renderer.DrawPlanet(_camera, _moon, Vector3.Zero);
+        for (int mi = 0; mi < _moons.Length; mi++)
+            if (WorldAlive(_worldMoonsIdx[mi])) _renderer.DrawPlanet(_camera, _moons[mi].Body, Vector3.Zero);
+        for (int ci = 0; ci < _comets.All.Length; ci++)
+            if (WorldAlive(_worldCometIdx[ci])) _renderer.DrawPlanet(_camera, _comets.All[ci].Body, Vector3.Zero);
 
         // V3: cloud layer for any planet that has one (currently just Earth).
         // Drawn after the opaque planet pass so alpha-blending composites over
@@ -824,7 +862,11 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawClouds(_camera, p, Vector3.Zero);
 
         var saturn = _planets[5];
-        _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
+        if (WorldAlive(_worldPlanetIdx[5])) _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
+
+        // Physics sandbox, Compare mode: translucent ghost of every integrated body at
+        // its ephemeris position plus a dashed link, so the divergence is legible.
+        if (_simMode == SimulationMode.Compare) DrawGhosts();
         _profiler.EndPass();
 
         _profiler.BeginPass("particles");
@@ -832,6 +874,7 @@ public sealed class SolarSystemWindow : GameWindow
         _comets.DrawTails(_camera);
         _solarWind.Draw(_camera);
         _solarFlares.Draw(_camera);
+        DrawImpactFlashes();
 
         // S9–S11: probe crosses, Lagrange-point diamonds, meteor streaks. All use
         // additive blending so they brighten the underlying scene without occluding it.
@@ -849,7 +892,7 @@ public sealed class SolarSystemWindow : GameWindow
         }
 
         // S14: heliocentric-alignment indicator (line through aligned majors).
-        if (_showAlignment) _alignment.Draw(_camera, _majorPlanets);
+        if (_showAlignment) _alignment.Draw(_camera, _alignmentPlanets);
 
         // V13: aurora ribbons at Earth + Jupiter poles. Drawn inside the HDR pass
         // so the bright crests feed the bloom composite. Intensity is boosted when
@@ -859,11 +902,13 @@ public sealed class SolarSystemWindow : GameWindow
             float t = (float)GLFW.GetTime();
             float wind = _solarWind.Enabled ? 1.0f : 0.5f;
             var earth = _planets[2];
-            _aurora.DrawForBody(_camera, earth.Position, earth.VisualRadius, earth.AxisTiltDeg,
-                new Vector4(0.30f, 1.00f, 0.55f, 0.80f), 1.0f * wind, t);
+            if (WorldAlive(_worldPlanetIdx[2]))
+                _aurora.DrawForBody(_camera, earth.Position, earth.VisualRadius, earth.AxisTiltDeg,
+                    new Vector4(0.30f, 1.00f, 0.55f, 0.80f), 1.0f * wind, t);
             var jupiter = _planets[4];
-            _aurora.DrawForBody(_camera, jupiter.Position, jupiter.VisualRadius, jupiter.AxisTiltDeg,
-                new Vector4(0.85f, 0.45f, 1.00f, 0.85f), 0.85f * wind, t);
+            if (WorldAlive(_worldPlanetIdx[4]))
+                _aurora.DrawForBody(_camera, jupiter.Position, jupiter.VisualRadius, jupiter.AxisTiltDeg,
+                    new Vector4(0.85f, 0.45f, 1.00f, 0.85f), 0.85f * wind, t);
         }
 
         // Apply HDR bright-pass + Gaussian blur + additive composite to the
@@ -889,17 +934,26 @@ public sealed class SolarSystemWindow : GameWindow
                 _renderer.DrawLabel(_font, _camera,
                     p.Position + new Vector3(0, p.VisualRadius + 1.0f, 0),
                     p.Name, 13, new Vector4(0.85f, 0.9f, 1f, 0.95f));
-            _renderer.DrawLabel(_font, _camera,
-                _moon.Position + new Vector3(0, _moon.VisualRadius + 0.5f, 0),
-                _moon.Name, 12, new Vector4(0.85f, 0.85f, 0.85f, 0.9f));
-            foreach (var m in _moons)
+            if (WorldAlive(_worldMoonIdx))
+                _renderer.DrawLabel(_font, _camera,
+                    _moon.Position + new Vector3(0, _moon.VisualRadius + 0.5f, 0),
+                    _moon.Name, 12, new Vector4(0.85f, 0.85f, 0.85f, 0.9f));
+            for (int mi = 0; mi < _moons.Length; mi++)
+            {
+                if (!WorldAlive(_worldMoonsIdx[mi])) continue;
+                var m = _moons[mi];
                 _renderer.DrawLabel(_font, _camera,
                     m.Body.Position + new Vector3(0, m.Body.VisualRadius + 0.4f, 0),
                     m.Body.Name, 11, new Vector4(0.85f, 0.85f, 0.85f, 0.85f));
-            foreach (var c in _comets.All)
+            }
+            for (int ci = 0; ci < _comets.All.Length; ci++)
+            {
+                if (!WorldAlive(_worldCometIdx[ci])) continue;
+                var c = _comets.All[ci];
                 _renderer.DrawLabel(_font, _camera,
                     c.Body.Position + new Vector3(0, c.Body.VisualRadius + 0.5f, 0),
                     c.Body.Name, 12, new Vector4(0.7f, 0.85f, 1f, 0.9f));
+            }
         }
 
         // S9: probe labels (always drawn when probes are visible — they're the
@@ -1108,12 +1162,23 @@ public sealed class SolarSystemWindow : GameWindow
             }
         }
 
-        // S15: small banner while the N-body integrator is driving the majors.
-        if (_nbodyEnabled)
+        // Physics sandbox: mode banner (top-right, under the FPS HUD) and the
+        // diagnostics card (top-centre, clear of the right-hand panels). The seek
+        // progress bar takes the top-centre feedback slot below.
+        if (_simMode != SimulationMode.Ephemeris)
         {
-            _renderer.DrawText(_font, $"⚙ {Localization.T("ui.nbody.banner")}",
-                _renderer.FramebufferSize.X - 360f, 12f + 6 * 18f, 13f,
+            float px = _renderer.FramebufferSize.X - 360f;
+            float py = 12f + (_showHud ? 6 * 18f + 12f : 0f);
+            string modeKey = _simMode == SimulationMode.Compare ? "ui.physics.banner.compare" : "ui.physics.banner.physics";
+            _renderer.DrawText(_font, $"⚙ {Localization.T(modeKey)}", px, py, 13f,
                 new Vector4(0.65f, 1f, 0.85f, 0.95f));
+            if (_showPhysicsHud)
+            {
+                // Below the top-left status lines and the top-centre seek feedback, and
+                // never under the settings panel (which starts 476 px from the right edge).
+                float hx = MathF.Min(_renderer.FramebufferSize.X * 0.5f - 300f, _renderer.FramebufferSize.X - 476f - 360f);
+                DrawPhysicsHud(MathF.Max(12f, hx), 84f);
+            }
         }
 
         // Date-seek prompt: top-center modal overlay while active. Drawn after every
@@ -1143,6 +1208,24 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawText(_font, sb.ToString(),
                 _renderer.FramebufferSize.X * 0.5f - 200f, 20f, 16f,
                 new Vector4(0.85f, 1f, 0.85f, 1f));
+        }
+        else if (_simMode != SimulationMode.Ephemeris && _physicsTarget is { } target && _world.Ready)
+        {
+            // Physics sandbox: a date jump is integrated over several frames — show
+            // where the clock is on its way to the target instead of "Jumped to".
+            double span = Math.Abs(target - _physicsSeekFrom);
+            double done = Math.Abs(_simDays - _physicsSeekFrom);
+            double pct = span > 0 ? Math.Clamp(100.0 * done / span, 0.0, 100.0) : 100.0;
+            const int Cells = 24;
+            int filled = (int)Math.Round(pct / 100.0 * Cells);
+            var bar = new System.Text.StringBuilder(Cells);
+            for (int i = 0; i < Cells; i++) bar.Append(i < filled ? '█' : '░');
+            var targetDate = OrbitalMechanics.J2000.AddDays(target);
+            var col = new Vector4(1f, 0.9f, 0.5f, 0.95f);
+            _renderer.DrawText(_font,
+                Localization.T("ui.physics.progress", date.ToString("yyyy-MM-dd"), targetDate.ToString("yyyy-MM-dd"), pct),
+                _renderer.FramebufferSize.X * 0.5f - 160f, 20f, 14f, col);
+            _renderer.DrawText(_font, bar.ToString(), _renderer.FramebufferSize.X * 0.5f - 160f, 38f, 13f, col);
         }
         else if (_seekFeedback.Length > 0)
         {
@@ -1322,7 +1405,7 @@ public sealed class SolarSystemWindow : GameWindow
         {
             if (jumpTo is { } ev)
             {
-                _simDays = Bookmarks.ToSimDays(ev);
+                SetSimTime(Bookmarks.ToSimDays(ev));
                 ClearAllTrails();
                 _audio.PlayTick();
                 _seekFeedback = $"{ev.Kind}: {ev.Title} \u2014 {ev.Date:yyyy-MM-dd}";
@@ -1433,6 +1516,7 @@ public sealed class SolarSystemWindow : GameWindow
         for (int i = 0; i < _planets.Length; i++)
         {
             if (!_showDwarfs && i >= _dwarfStart) break;
+            if (!WorldAlive(_worldPlanetIdx[i])) continue;
             if (!TryProject(_planets[i].Position, out var sp)) continue;
             float d = (sp - screenPos).Length;
             float r = PickRadius(_planets[i].Position, _planets[i].VisualRadius);
@@ -1443,6 +1527,7 @@ public sealed class SolarSystemWindow : GameWindow
         // _planets.Length and increases with their position in _extraBodies.
         for (int i = 0; i < _extraBodies.Length; i++)
         {
+            if (!ExtraAlive(i)) continue;
             var b = _extraBodies[i];
             if (!TryProject(b.Position, out var sp)) continue;
             float d = (sp - screenPos).Length;
@@ -1468,8 +1553,9 @@ public sealed class SolarSystemWindow : GameWindow
         // For planets we re-evaluate the heliocentric position against the current sim
         // time so the camera aims at where the body actually is right now. Moons and the
         // comet body are already updated each frame in OnUpdateFrame, so their Position
-        // is already current.
-        if (index < _planets.Length)
+        // is already current. In the physics modes the integrated position is the
+        // truth, so the analytic re-evaluation is skipped.
+        if (index < _planets.Length && _simMode == SimulationMode.Ephemeris)
         {
             body.HelioAU = OrbitalMechanics.HeliocentricPosition(body, _simDays);
             float s = OrbitalMechanics.OrbitWorldScale(body.SemiMajorAxisAU);
@@ -1570,9 +1656,382 @@ public sealed class SolarSystemWindow : GameWindow
     {
         if (_planets == null) return;
         foreach (var p in _planets) p.TrailReset();
-        // S15: any large jump (date seek, scrubber, bookmark) clears trails — also
-        // resync the N-body integrator so it doesn't try to integrate across the gap.
-        _nbodyDirty = true;
+    }
+
+    // -------- Physics sandbox ----------------------------------------------------
+
+    /// <summary>Sim time the app is heading for: the pending physics seek target, or
+    /// the current clock when nothing is pending (always the clock in Ephemeris mode).</summary>
+    private double TargetSimDays => _physicsTarget ?? _simDays;
+    private double _physicsSeekFrom;
+
+    /// <summary>Jump the simulation clock. Ephemeris mode snaps instantly; the physics
+    /// modes register a seek target and integrate toward it over the following
+    /// frames (see <see cref="AdvancePhysics"/>), showing a progress banner.</summary>
+    private void SetSimTime(double days)
+    {
+        if (_simMode == SimulationMode.Ephemeris)
+        {
+            _simDays = days;
+            _physicsTarget = null;
+            return;
+        }
+        if (_physicsTarget == null) _physicsSeekFrom = _simDays;
+        _physicsTarget = days;
+    }
+
+    /// <summary>Build the N-body world over the render bodies (Sun, planets, dwarfs,
+    /// Moon, Galileans, Titan; comets as test particles) and cache the index maps.</summary>
+    private void BuildPhysicsWorld()
+    {
+        var comets = _comets.Bodies.ToArray();
+        _world = PhysicsWorld.Create(_planets, _dwarfStart, _moon, _moons, comets, _physConst);
+        _worldPlanetIdx = new int[_planets.Length];
+        for (int i = 0; i < _planets.Length; i++) _worldPlanetIdx[i] = _world.IndexOf(_planets[i].Name);
+        _worldMoonIdx = _world.IndexOf(_moon.Name);
+        _worldMoonsIdx = new int[_moons.Length];
+        for (int i = 0; i < _moons.Length; i++) _worldMoonsIdx[i] = _world.IndexOf(_moons[i].Body.Name);
+        _worldCometIdx = new int[comets.Length];
+        for (int i = 0; i < comets.Length; i++) _worldCometIdx[i] = _world.IndexOf(comets[i].Name);
+        _ghostPlanets = new Vector3[_planets.Length];
+        _ghostMoons = new Vector3[_moons.Length];
+        _ghostComets = new Vector3[comets.Length];
+        _world.CollisionsEnabled = _collisionsEnabled;
+        // Unified (pick / focus) index of every world body, and the world index of
+        // every extra body, for collision bookkeeping.
+        _worldToUnified.Clear();
+        _worldToUnified[0] = -1;
+        for (int i = 0; i < _planets.Length; i++) if (_worldPlanetIdx[i] >= 0) _worldToUnified[_worldPlanetIdx[i]] = i;
+        _worldExtraIdx = new int[_extraBodies.Length];
+        for (int j = 0; j < _extraBodies.Length; j++)
+        {
+            _worldExtraIdx[j] = _world.IndexOf(_extraBodies[j].Name);
+            if (_worldExtraIdx[j] >= 0) _worldToUnified[_worldExtraIdx[j]] = _planets.Length + j;
+        }
+    }
+
+    /// <summary>(Re)seed the world from the ephemerides at the current date and
+    /// restart the belt; forgets any collision already announced.</summary>
+    private void SeedPhysics()
+    {
+        _world.Initialize(_simDays);
+        _belt.BeginPhysics(_world);
+        _announcedCollisions = 0;
+        _impactFlashes.Clear();
+        SyncAbsorbedBodies();
+    }
+
+    /// <summary>True when the world body (or, outside the physics modes, any body) still
+    /// exists; -1 stands for "not integrated" and is always alive.</summary>
+    private bool WorldAlive(int worldIdx)
+        => _simMode == SimulationMode.Ephemeris || worldIdx < 0 || !_world.Ready || _world.Bodies[worldIdx].Alive;
+
+    private bool ExtraAlive(int extraIdx)
+        => extraIdx < 0 || extraIdx >= _worldExtraIdx.Length || WorldAlive(_worldExtraIdx[extraIdx]);
+
+    private int WorldToUnified(int worldIdx) => _worldToUnified.TryGetValue(worldIdx, out int u) ? u : -2;
+
+    /// <summary>The bodies of <paramref name="all"/> (a prefix slice of <see cref="_planets"/>)
+    /// that have not been absorbed; the same array when none has.</summary>
+    private Planet[] AliveSubset(Planet[] all)
+    {
+        if (_simMode == SimulationMode.Ephemeris || !_world.Ready) return all;
+        int dead = 0;
+        for (int i = 0; i < all.Length; i++) if (!WorldAlive(_worldPlanetIdx[i])) dead++;
+        if (dead == 0) return all;
+        var arr = new Planet[all.Length - dead];
+        int n = 0;
+        for (int i = 0; i < all.Length; i++) if (WorldAlive(_worldPlanetIdx[i])) arr[n++] = all[i];
+        return arr;
+    }
+
+    /// <summary>Per-body side effects of the world's alive flags: an absorbed comet stops
+    /// emitting (its existing tail fades out on its own).</summary>
+    private void SyncAbsorbedBodies()
+    {
+        for (int ci = 0; ci < _comets.All.Length; ci++)
+            _comets.All[ci].TailEnabled = WorldAlive(_worldCometIdx[ci]);
+    }
+
+    private static string BodyDisplayName(string name) => name == "Sun" ? Localization.T("ui.body.sun") : name;
+
+    /// <summary>Turn the world's new collision events into UI: a banner, a whoosh, an
+    /// impact flash on the survivor, and focus / selection / trail cleanup for the body
+    /// that no longer exists.</summary>
+    private void ProcessCollisionEvents()
+    {
+        var events = _world.Collisions;
+        for (int k = _announcedCollisions; k < events.Count; k++)
+        {
+            var ev = events[k];
+            ShowBanner(Localization.T("ui.physics.collision.banner", BodyDisplayName(ev.AbsorbedName), BodyDisplayName(ev.SurvivorName)), 4.0);
+            _audio.PlayWhoosh();
+            int survivor = WorldToUnified(ev.Survivor);
+            int absorbed = WorldToUnified(ev.Absorbed);
+            if (absorbed != -2)
+            {
+                if (_focusIndex == absorbed) FocusOn(survivor == -2 ? -1 : survivor);
+                if (_selectedIndex == absorbed) _selectedIndex = survivor;
+                if (_hoverIndex == absorbed) _hoverIndex = -2;
+                GetBody(absorbed)?.TrailReset();
+            }
+            if (survivor != -2) _impactFlashes.Add((survivor, GLFW.GetTime()));
+        }
+        if (events.Count != _announcedCollisions)
+        {
+            _announcedCollisions = events.Count;
+            SyncAbsorbedBodies();
+        }
+    }
+
+    /// <summary>Expanding, fading HDR fireball on every recent collision survivor (the
+    /// Sun's halo sprite, additive, so the bloom pass ignites it).</summary>
+    private void DrawImpactFlashes()
+    {
+        if (_impactFlashes.Count == 0) return;
+        double now = GLFW.GetTime();
+        for (int i = _impactFlashes.Count - 1; i >= 0; i--)
+        {
+            var (body, start) = _impactFlashes[i];
+            float t = (float)((now - start) / ImpactFlashSeconds);
+            if (t >= 1f || _simMode == SimulationMode.Ephemeris) { _impactFlashes.RemoveAt(i); continue; }
+            Vector3 pos;
+            float radius;
+            if (body == -1) { pos = Vector3.Zero; radius = SunRadius; }
+            else
+            {
+                var b = GetBody(body);
+                if (b == null) { _impactFlashes.RemoveAt(i); continue; }
+                pos = b.Position;
+                radius = b.VisualRadius;
+            }
+            float fade = (1f - t) * (1f - t);
+            float size = radius * (1.5f + 8f * t);
+            _renderer.DrawGlowSprite(_camera, pos, size, new Vector3(1.0f, 0.70f, 0.40f) * (2.5f * fade));
+            _renderer.DrawGlowSprite(_camera, pos, size * 0.45f, new Vector3(1.0f, 0.95f, 0.85f) * (3.0f * fade));
+        }
+    }
+
+    /// <summary>Switch between Ephemeris / Physics / Compare. Leaving Ephemeris seeds the
+    /// world from the ephemerides at the current date (and the belt from its Kepler
+    /// orbits); returning to Ephemeris simply hands the bodies back to the analytic
+    /// path. Physics ↔ Compare keeps the integrated state.</summary>
+    private void SetSimulationMode(SimulationMode mode)
+    {
+        if (mode == _simMode) return;
+        var old = _simMode;
+        _simMode = mode;
+        _physicsTarget = null;
+        if (old == SimulationMode.Ephemeris)
+        {
+            SeedPhysics();
+        }
+        else if (mode == SimulationMode.Ephemeris)
+        {
+            _belt.EndPhysics();
+            _impactFlashes.Clear();
+            SyncAbsorbedBodies();   // everything exists again on the analytic path
+        }
+        ClearAllTrails();
+    }
+
+    /// <summary>Re-seed the running physics from the ephemerides at the current date.</summary>
+    private void RestartPhysicsFromEphemeris()
+    {
+        if (_simMode == SimulationMode.Ephemeris) return;
+        _physicsTarget = null;
+        SeedPhysics();
+        ClearAllTrails();
+        ShowBanner(Localization.T("ui.physics.reinit.done", OrbitalMechanics.J2000.AddDays(_simDays).ToString("yyyy-MM-dd")), 2.5);
+    }
+
+    /// <summary>Per-frame integrator drive: catch the world up to the requested time
+    /// within the CPU budget and adopt its clock as the frame's sim time.</summary>
+    private void AdvancePhysics()
+    {
+        if (!_world.Ready) SeedPhysics();
+        double goal = _physicsTarget ?? _simDays;
+        int maxSteps = Headless != null ? int.MaxValue : PhysicsMaxStepsPerFrame;
+        double budget = Headless != null ? double.PositiveInfinity : PhysicsFrameBudgetMs;
+        bool done = _world.AdvanceTo(goal, maxSteps, budget);
+        _simDays = _world.TimeDays;
+        if (done) _physicsTarget = null;
+        ProcessCollisionEvents();
+    }
+
+    /// <summary>Geocentric ELP-2000 offset of the Moon in world units — exactly the
+    /// vector the pre-sandbox renderer computed (artistic radius in compressed mode,
+    /// true km in real-scale mode). Shared by the Ephemeris path and Compare ghosts.</summary>
+    private static Vector3 EphemerisMoonOffsetWorld(double simDays)
+    {
+        var lunar = LunarEphemeris.Compute(simDays);
+        double lonRad = lunar.LongitudeDeg * OrbitalMechanics.DegToRad;
+        double latRad = lunar.LatitudeDeg * OrbitalMechanics.DegToRad;
+        double cosB = Math.Cos(latRad);
+        // Geocentric ecliptic Cartesian (km), then mapped to world (x, z, -y).
+        double mx = lunar.DistanceKm * cosB * Math.Cos(lonRad);
+        double my = lunar.DistanceKm * cosB * Math.Sin(lonRad);
+        double mz = lunar.DistanceKm * Math.Sin(latRad);
+        Vector3 moonOffsetKm = new((float)mx, (float)mz, (float)-my);
+
+        if (OrbitalMechanics.RealScale)
+            return moonOffsetKm * (float)OrbitalMechanics.KmToWorldRealScale;
+        Vector3 dir = moonOffsetKm.LengthSquared > 1e-6f
+            ? Vector3.Normalize(moonOffsetKm)
+            : Vector3.UnitX;
+        return dir * MoonOrbitRadius;
+    }
+
+    /// <summary>Planetocentric offset of a Galilean / Titan in world units from the
+    /// Meeus mean longitudes (Galileans) or uniform circular motion (Titan) — the
+    /// pre-sandbox renderer's construction, unchanged.</summary>
+    private static Vector3 EphemerisSatelliteOffsetWorld(Moon m,
+        (double Io, double Europa, double Ganymede, double Callisto) galilean, double simDays)
+    {
+        const double TwoPi = Math.PI * 2.0;
+        float r = OrbitalMechanics.RealScale
+            ? (float)(m.RealOrbitRadiusKm * OrbitalMechanics.KmToWorldRealScale)
+            : m.ArtisticOrbitRadius;
+
+        double angle;
+        switch (m.Body.Name)
+        {
+            case "Io":       angle = galilean.Io       * OrbitalMechanics.DegToRad; break;
+            case "Europa":   angle = galilean.Europa   * OrbitalMechanics.DegToRad; break;
+            case "Ganymede": angle = galilean.Ganymede * OrbitalMechanics.DegToRad; break;
+            case "Callisto": angle = galilean.Callisto * OrbitalMechanics.DegToRad; break;
+            default: // Titan and any future non-Galilean satellite.
+                angle = (simDays / m.OrbitalPeriodDays) * TwoPi
+                        + m.PhaseDeg * OrbitalMechanics.DegToRad;
+                break;
+        }
+
+        // Negate the Z component so the moon orbits prograde (CCW as viewed from
+        // the host's north pole, +Y), matching every real major satellite in the
+        // solar system. Without the flip the (cos, sin) parametrisation runs
+        // clockwise in our world-axis convention (X=east, -Z=north).
+        float cx = (float)Math.Cos(angle) * r;
+        float cz = -(float)Math.Sin(angle) * r;
+        float incl = MathHelper.DegreesToRadians(m.OrbitInclinationDeg);
+        float cy = cz * MathF.Sin(incl);
+        cz *= MathF.Cos(incl);
+        return new Vector3(cx, cy, cz);
+    }
+
+    /// <summary>Map an integrated planetocentric offset (AU) to world units: true km in
+    /// real-scale mode; in compressed mode the artistic radius stretched by the ratio of
+    /// the current distance to the real orbit radius, so eccentricity and escape stay visible.</summary>
+    private static Vector3 PhysicsSatelliteOffsetWorld(Vector3d offAU, float artisticRadius, double realOrbitKm)
+    {
+        Vector3 km = new((float)(offAU.X * PhysicsWorld.AuKm), (float)(offAU.Y * PhysicsWorld.AuKm), (float)(offAU.Z * PhysicsWorld.AuKm));
+        if (OrbitalMechanics.RealScale) return km * (float)OrbitalMechanics.KmToWorldRealScale;
+        float len = km.Length;
+        if (len < 1e-3f) return Vector3.Zero;
+        return km / len * (artisticRadius * (float)(len / realOrbitKm));
+    }
+
+    /// <summary>Compare mode: where every integrated body would be on the analytic path.</summary>
+    private void ComputeGhostPositions((double Io, double Europa, double Ganymede, double Callisto) galilean)
+    {
+        for (int pi = 0; pi < _planets.Length; pi++)
+        {
+            var p = _planets[pi];
+            var h = OrbitalMechanics.HeliocentricPosition(p, _simDays);
+            float s = OrbitalMechanics.OrbitWorldScale(p.SemiMajorAxisAU);
+            _ghostPlanets[pi] = new Vector3((float)(h.X * s), (float)(h.Y * s), (float)(h.Z * s));
+        }
+        _ghostMoon = _ghostPlanets[2] + EphemerisMoonOffsetWorld(_simDays);
+        for (int mi = 0; mi < _moons.Length; mi++)
+            _ghostMoons[mi] = _ghostPlanets[_moons[mi].HostPlanetIndex] + EphemerisSatelliteOffsetWorld(_moons[mi], galilean, _simDays);
+        for (int ci = 0; ci < _comets.All.Length; ci++)
+        {
+            var b = _comets.All[ci].Body;
+            var h = OrbitalMechanics.HeliocentricPosition(b, _simDays);
+            float s = OrbitalMechanics.OrbitWorldScale(b.SemiMajorAxisAU);
+            _ghostComets[ci] = new Vector3((float)(h.X * s), (float)(h.Y * s), (float)(h.Z * s));
+        }
+    }
+
+    private void DrawGhosts()
+    {
+        const float alpha = 0.3f;
+        var link = new Vector4(1f, 0.65f, 0.3f, 0.85f);
+        void Ghost(Planet p, Vector3 ghostPos)
+        {
+            _renderer.DrawPlanetGhost(_camera, p, Vector3.Zero, ghostPos, alpha);
+            float len = (p.Position - ghostPos).Length;
+            if (len > p.VisualRadius * 0.05f)
+                _renderer.DrawDashedLine(_camera, ghostPos, p.Position, link, MathF.Max(len / 24f, 1e-4f));
+        }
+        for (int pi = 0; pi < _planets.Length; pi++)
+        {
+            if (!_showDwarfs && pi >= _dwarfStart) break;
+            if (_worldPlanetIdx[pi] >= 0 && WorldAlive(_worldPlanetIdx[pi])) Ghost(_planets[pi], _ghostPlanets[pi]);
+        }
+        if (_worldMoonIdx >= 0 && WorldAlive(_worldMoonIdx)) Ghost(_moon, _ghostMoon);
+        for (int mi = 0; mi < _moons.Length; mi++)
+            if (_worldMoonsIdx[mi] >= 0 && WorldAlive(_worldMoonsIdx[mi])) Ghost(_moons[mi].Body, _ghostMoons[mi]);
+        for (int ci = 0; ci < _comets.All.Length; ci++)
+            if (_worldCometIdx[ci] >= 0 && WorldAlive(_worldCometIdx[ci])) Ghost(_comets.All[ci].Body, _ghostComets[ci]);
+    }
+
+    /// <summary>World index of the body the diagnostics card should describe: the
+    /// selected body, else the focused one, else Earth.</summary>
+    private int PhysicsHudBodyIndex()
+    {
+        var b = GetBody(_selectedIndex) ?? GetBody(_focusIndex);
+        int idx = b != null ? _world.IndexOf(b.Name) : -1;
+        if (idx < 0 && _planets.Length > 2) idx = _worldPlanetIdx[2];
+        return idx;
+    }
+
+    private void DrawPhysicsHud(float x, float y)
+    {
+        if (!_world.Ready) return;
+        var c = _physConst;
+        var sb = new System.Text.StringBuilder();
+        sb.Append(Localization.T("ui.physics.hud.step", _world.CurrentGlobalStepDays)).Append('\n');
+        sb.Append(Localization.T("ui.physics.hud.steps", _world.LastGlobalSteps, _world.LastSatelliteSteps, _belt.LastPhysicsSteps)).Append('\n');
+        double dE = _world.EnergyDrift();
+        var L = _world.AngularMomentum();
+        var L0 = _world.InitialAngularMomentum;
+        double dL = L0.Length > 0 ? (L - L0).Length / L0.Length : 0.0;
+        sb.Append(Localization.T("ui.physics.hud.energy", dE.ToString("+0.0e-0;-0.0e-0", System.Globalization.CultureInfo.InvariantCulture),
+            dL.ToString("0.0e-0", System.Globalization.CultureInfo.InvariantCulture))).Append('\n');
+        sb.Append(Localization.T("ui.physics.hud.constants", c.G, c.SunMassScale, c.GravityExponent, c.SpeedOfLightScale)).Append('\n');
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var hits = _world.Collisions;
+        sb.Append(Localization.T("ui.physics.hud.collisions", hits.Count,
+            Localization.T(_collisionsEnabled ? "ui.on" : "ui.off"))).Append('\n');
+        for (int k = hits.Count - 1, shown = 0; k >= 0 && shown < 3; k--, shown++)
+        {
+            var ev = hits[k];
+            sb.Append(Localization.T("ui.physics.hud.collision",
+                OrbitalMechanics.J2000.AddDays(ev.TimeDays).ToString("yyyy-MM-dd"),
+                BodyDisplayName(ev.AbsorbedName), BodyDisplayName(ev.SurvivorName),
+                ev.RelativeSpeedAUPerDay * PhysicsWorld.AuKm / 86400.0,
+                (ev.ImpactEnergy * PhysicsWorld.EnergyUnitJoules).ToString("0.0e0", inv))).Append('\n');
+        }
+        int bi = PhysicsHudBodyIndex();
+        if (bi >= 0)
+        {
+            var body = _world.Bodies[bi];
+            var el = _world.OsculatingElements(bi);
+            string primary = body.Parent >= 0 ? BodyDisplayName(_world.Bodies[body.Parent].Name) : Localization.T("ui.body.sun");
+            if (!body.Alive)
+                sb.Append(Localization.T("ui.physics.hud.absorbed", body.Name,
+                    BodyDisplayName(_world.Bodies[body.AbsorbedBy].Name),
+                    OrbitalMechanics.J2000.AddDays(body.AbsorbedAtDays).ToString("yyyy-MM-dd")));
+            else if (!el.Bound)
+                sb.Append(Localization.T("ui.physics.hud.unbound", body.Name, primary));
+            else if (body.Parent >= 0)
+                sb.Append(Localization.T("ui.physics.hud.elements.km", body.Name, primary,
+                    el.SemiMajorAxisAU * PhysicsWorld.AuKm, el.Eccentricity, el.PeriodDays));
+            else
+                sb.Append(Localization.T("ui.physics.hud.elements.au", body.Name, primary,
+                    el.SemiMajorAxisAU, el.Eccentricity, el.PeriodDays));
+        }
+        _renderer.DrawText(_font, sb.ToString(), x, y, 12f, new Vector4(0.7f, 1f, 0.85f, 0.95f));
     }
 
     /// <summary>R3: derive the sky shader's brightness/saturation from the camera's
@@ -1613,9 +2072,9 @@ public sealed class SolarSystemWindow : GameWindow
         var spheres = new Vector4[16];
         int n = 0;
         // Moons first so they aren't crowded out if the cap is reached.
-        if (n < spheres.Length) spheres[n++] = new Vector4(_moon.Position, _moon.VisualRadius);
-        foreach (var m in _moons)
-            if (n < spheres.Length) spheres[n++] = new Vector4(m.Body.Position, m.Body.VisualRadius);
+        if (n < spheres.Length && WorldAlive(_worldMoonIdx)) spheres[n++] = new Vector4(_moon.Position, _moon.VisualRadius);
+        for (int mi = 0; mi < _moons.Length; mi++)
+            if (n < spheres.Length && WorldAlive(_worldMoonsIdx[mi])) spheres[n++] = new Vector4(_moons[mi].Body.Position, _moons[mi].Body.VisualRadius);
         foreach (var p in visible)
             if (n < spheres.Length) spheres[n++] = new Vector4(p.Position, p.VisualRadius);
         _renderer.SetShadowCasters(spheres.AsSpan(0, n));
@@ -1631,9 +2090,13 @@ public sealed class SolarSystemWindow : GameWindow
     /// the host correctly indicates their permanent near-side orientation.</summary>
     private IEnumerable<(Planet moon, Planet host)> EnumerateTidalPairs()
     {
-        yield return (_moon, _planets[2]);
-        foreach (var m in _moons)
-            yield return (m.Body, _planets[m.HostPlanetIndex]);
+        if (WorldAlive(_worldMoonIdx) && WorldAlive(_worldPlanetIdx[2])) yield return (_moon, _planets[2]);
+        for (int mi = 0; mi < _moons.Length; mi++)
+        {
+            var m = _moons[mi];
+            if (WorldAlive(_worldMoonsIdx[mi]) && WorldAlive(_worldPlanetIdx[m.HostPlanetIndex]))
+                yield return (m.Body, _planets[m.HostPlanetIndex]);
+        }
     }
 
     private static Moon CreateMoon(string name, int hostIndex,
@@ -1757,13 +2220,96 @@ public sealed class SolarSystemWindow : GameWindow
             Get = () => _lightTime, Set = v => _lightTime = v, Default = false, LegacyKey = "LightTime",
             Banner = v => Localization.T(v ? "ui.lighttime.on" : "ui.lighttime.off"),
         });
+        // Physics sandbox: the old boolean "nbody" switch became a three-way mode
+        // selector (Ephemeris / Physics / Compare); saves with nbody=true migrate to
+        // Physics in TryLoadPersistedState.
+        r.Add(new Choice
+        {
+            Id = "simmode", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.simmode",
+            OptionKeys = new[] { "ui.simmode.ephemeris", "ui.simmode.physics", "ui.simmode.compare" },
+            Get = () => (int)_simMode,
+            Set = v => SetSimulationMode((SimulationMode)v),
+            Default = (int)SimulationMode.Ephemeris,
+            Banner = v => Localization.T("ui.simmode.banner", Localization.T("ui.simmode." + ((SimulationMode)v).ToString().ToLowerInvariant())),
+        });
+        Func<string?> physicsOnly = () => _simMode == SimulationMode.Ephemeris ? "ui.unavailable.ephemeris" : null;
+        r.Add(new Slider
+        {
+            Id = "physics.g", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.g",
+            Get = () => _physConst.G, Set = v => { _physConst.G = v; _world.RefreshMasses(); },
+            Min = PhysicsConstants.GMin, Max = PhysicsConstants.GMax, Step = 1.1220184543, LogScale = true,
+            Default = 1.0, Format = "×{0:0.###}", Unavailable = physicsOnly,
+        });
+        r.Add(new Slider
+        {
+            Id = "physics.sunmass", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.sunmass",
+            Get = () => _physConst.SunMassScale, Set = v => { _physConst.SunMassScale = v; _world.RefreshMasses(); },
+            Min = PhysicsConstants.SunMassMin, Max = PhysicsConstants.SunMassMax, Step = 1.1220184543, LogScale = true,
+            Default = 1.0, Format = "×{0:0.###}", Unavailable = physicsOnly,
+        });
+        r.Add(new Slider
+        {
+            Id = "physics.exponent", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.exponent",
+            Get = () => _physConst.GravityExponent, Set = v => _physConst.GravityExponent = v,
+            Min = PhysicsConstants.ExponentMin, Max = PhysicsConstants.ExponentMax, Step = 0.01,
+            Default = 2.0, Format = "{0:0.00}", Unavailable = physicsOnly,
+        });
+        r.Add(new Slider
+        {
+            Id = "physics.lightspeed", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.lightspeed",
+            Get = () => _physConst.SpeedOfLightScale, Set = v => _physConst.SpeedOfLightScale = v,
+            Min = PhysicsConstants.LightSpeedMin, Max = PhysicsConstants.LightSpeedMax, Step = 1.1220184543, LogScale = true,
+            Default = 1.0, Format = "×{0:0.###}", Unavailable = physicsOnly,
+        });
+        r.Add(new Command
+        {
+            Id = "physics.resetconst", Category = FeatureCategory.Simulation, LabelKey = "ui.cmd.physics.resetconst",
+            Run = () => { _physConst.Reset(); _world.RefreshMasses(); ShowBanner(Localization.T("ui.physics.const.reset"), 2.0); },
+            ClosesPalette = false, ShowInPanel = true, Unavailable = physicsOnly,
+        });
+        r.Add(new Command
+        {
+            Id = "physics.reinit", Category = FeatureCategory.Simulation, LabelKey = "ui.cmd.physics.reinit",
+            Run = RestartPhysicsFromEphemeris, ClosesPalette = false, ShowInPanel = true, Unavailable = physicsOnly,
+        });
         r.Add(new Feature
         {
-            Id = "nbody", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.nbody",
-            Get = () => _nbodyEnabled,
-            Set = v => { _nbodyEnabled = v; if (v) _nbodyDirty = true; },
-            Default = false, LegacyKey = "NBodyEnabled",
-            Banner = v => Localization.T(v ? "ui.nbody.on" : "ui.nbody.off"),
+            Id = "physics.hud", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.hud",
+            Get = () => _showPhysicsHud, Set = v => _showPhysicsHud = v, Default = false,
+            Unavailable = physicsOnly, Banner = _ => "",
+        });
+        r.Add(new Feature
+        {
+            Id = "physics.collisions", Category = FeatureCategory.Simulation, LabelKey = "ui.settings.physics.collisions",
+            Get = () => _collisionsEnabled,
+            Set = v => { _collisionsEnabled = v; _world.CollisionsEnabled = v; },
+            Default = true, Unavailable = physicsOnly,
+            Banner = v => Localization.T(v ? "ui.physics.collisions.on" : "ui.physics.collisions.off"),
+        });
+        // Masses tab: one logarithmic slider per massive body (the Sun lives in the
+        // Simulation tab as "Sun mass").
+        foreach (var body in _world.Bodies)
+        {
+            if (!body.IsMassive || body.Kind == PhysicsBodyKind.Star) continue;
+            string name = body.Name;
+            var worldBody = body;
+            r.Add(new Slider
+            {
+                Id = "mass." + name.ToLowerInvariant(), Category = FeatureCategory.Masses, LabelKey = "ui.settings.mass",
+                LabelFn = () => Localization.T("ui.settings.mass", name),
+                DescKey = "ui.desc.mass",
+                Get = () => _physConst.GetBodyMassScale(name),
+                Set = v => { _physConst.SetBodyMassScale(name, v); _world.RefreshMasses(); },
+                Min = PhysicsConstants.BodyMassMin, Max = PhysicsConstants.BodyMassMax, Step = 1.1220184543, LogScale = true,
+                Default = 1.0, Format = "×{0:0.###}",
+                Unavailable = () => physicsOnly() ?? (worldBody.Alive ? null : "ui.unavailable.absorbed"),
+            });
+        }
+        r.Add(new Command
+        {
+            Id = "physics.resetmasses", Category = FeatureCategory.Masses, LabelKey = "ui.cmd.physics.resetmasses",
+            Run = () => { _physConst.ResetMasses(); _world.RefreshMasses(); ShowBanner(Localization.T("ui.physics.masses.reset"), 2.0); },
+            ClosesPalette = false, ShowInPanel = true, Unavailable = physicsOnly,
         });
         r.Add(new Feature
         {
@@ -2127,10 +2673,11 @@ public sealed class SolarSystemWindow : GameWindow
             Id = "realistic", LabelKey = "ui.preset.realistic",
             Overrides = new()
             {
-                ["realscale"] = true, ["lighttime"] = true, ["nbody"] = true,
+                ["realscale"] = true, ["lighttime"] = true,
                 ["trails"] = false, ["solarwind"] = false, ["solarflares"] = false,
                 ["lensflare"] = false, ["alignment"] = false,
             },
+            Choices = new() { ["simmode"] = (int)SimulationMode.Physics },
         });
         r.AddPreset(new FeaturePreset
         {
@@ -2140,7 +2687,7 @@ public sealed class SolarSystemWindow : GameWindow
                 ["bloom"] = false, ["fxaa"] = false, ["autoexposure"] = false, ["lensflare"] = false,
                 ["aurora"] = false, ["solarwind"] = false, ["solarflares"] = false, ["corona"] = false,
                 ["pbr"] = false, ["atmosphere"] = false, ["eclipses"] = false, ["oceanmask"] = false,
-                ["meteors"] = false, ["nbody"] = false, ["trails"] = false, ["probes"] = false,
+                ["meteors"] = false, ["trails"] = false, ["probes"] = false,
             },
         });
         r.AddPreset(new FeaturePreset
@@ -2179,10 +2726,10 @@ public sealed class SolarSystemWindow : GameWindow
     /// <summary>S12 / Q8: snap sim time to the next (or previous) bookmark.</summary>
     private void JumpToBookmark(bool forward)
     {
-        var entry = forward ? _bookmarks.Next(_simDays) : _bookmarks.Prev(_simDays);
+        var entry = forward ? _bookmarks.Next(TargetSimDays) : _bookmarks.Prev(TargetSimDays);
         if (entry is { } ev)
         {
-            _simDays = Bookmarks.ToSimDays(ev);
+            SetSimTime(Bookmarks.ToSimDays(ev));
             ClearAllTrails();
             _audio.PlayTick();
             ShowBanner($"{ev.Kind}: {ev.Title} — {ev.Date:yyyy-MM-dd}", 4.0);
@@ -2232,6 +2779,39 @@ public sealed class SolarSystemWindow : GameWindow
                         Status = c.Status,
                         Description = () => c.Description,
                         Unavailable = c.Unavailable,
+                    });
+                    break;
+                case Choice ch:
+                    _settings.Add(new SettingsPanel.ChoiceRow
+                    {
+                        Label = ch.LabelKey,
+                        LabelFn = ch.LabelFn,
+                        Category = ch.Category,
+                        Hint = ch.BindingText,
+                        ValueLabel = () => ch.ValueLabel,
+                        Cycle = delta =>
+                        {
+                            if (!ch.Cycle(delta)) return;
+                            string? text = ch.Banner?.Invoke(ch.Value) ?? $"{ch.Label}: {ch.ValueLabel}";
+                            if (text.Length > 0) ShowBanner(text);
+                        },
+                        Description = () => ch.Description,
+                        Unavailable = ch.Unavailable,
+                    });
+                    break;
+                case Slider s:
+                    _settings.Add(new SettingsPanel.SliderRow
+                    {
+                        Label = s.LabelKey,
+                        LabelFn = s.LabelFn,
+                        Category = s.Category,
+                        Hint = s.BindingText,
+                        Get = () => (float)s.Value,
+                        Set = v => s.Apply(v),
+                        Min = (float)s.Min, Max = (float)s.Max, Step = (float)s.Step,
+                        LogScale = s.LogScale, Format = s.Format,
+                        Description = () => s.Description,
+                        Unavailable = s.Unavailable,
                     });
                     break;
             }
@@ -2314,7 +2894,7 @@ public sealed class SolarSystemWindow : GameWindow
                     s, System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out double delta))
             {
-                _simDays += delta;
+                SetSimTime(TargetSimDays + delta);
                 ok = true;
             }
             else if (DateTime.TryParse(s,
@@ -2322,7 +2902,7 @@ public sealed class SolarSystemWindow : GameWindow
                     System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
                     out DateTime dt))
             {
-                _simDays = (dt - OrbitalMechanics.J2000).TotalDays;
+                SetSimTime((dt - OrbitalMechanics.J2000).TotalDays);
                 ok = true;
             }
         }
@@ -2331,7 +2911,7 @@ public sealed class SolarSystemWindow : GameWindow
         {
             ClearAllTrails();
             _audio.PlayTick();
-            var newDate = OrbitalMechanics.J2000.AddDays(_simDays);
+            var newDate = OrbitalMechanics.J2000.AddDays(TargetSimDays);
             _seekFeedback = $"Jumped to {newDate:yyyy-MM-dd}";
         }
         else
@@ -2372,8 +2952,10 @@ public sealed class SolarSystemWindow : GameWindow
     private IEnumerable<(int idx, string name)> EnumerateBodies()
     {
         yield return (-1, "Sun");
-        for (int i = 0; i < _planets.Length; i++) yield return (i, _planets[i].Name);
-        for (int i = 0; i < _extraBodies.Length; i++) yield return (_planets.Length + i, _extraBodies[i].Name);
+        for (int i = 0; i < _planets.Length; i++)
+            if (WorldAlive(_worldPlanetIdx[i])) yield return (i, _planets[i].Name);
+        for (int i = 0; i < _extraBodies.Length; i++)
+            if (ExtraAlive(i)) yield return (_planets.Length + i, _extraBodies[i].Name);
     }
 
     /// <summary>Find up to <paramref name="max"/> bodies whose names start with, then
@@ -2661,6 +3243,10 @@ public sealed class SolarSystemWindow : GameWindow
         public string Language { get; set; } = "en";
         public FeatureCategory SettingsTab { get; set; } = FeatureCategory.Bodies;
         public Dictionary<string, bool>? Features { get; set; }
+        /// <summary>Multi-option entries (<see cref="Choice"/>), id → option index.</summary>
+        public Dictionary<string, int>? Choices { get; set; }
+        /// <summary>Physics sandbox constants (not booleans, so not part of <see cref="Features"/>).</summary>
+        public PhysicsConstants.Dto? Physics { get; set; }
     }
 
     private void TryLoadPersistedState()
@@ -2674,9 +3260,11 @@ public sealed class SolarSystemWindow : GameWindow
             if (s == null) return;
 
             Dictionary<string, bool> toggles;
+            bool legacyNBody = false;
             if (s.Features != null)
             {
                 toggles = s.Features;
+                legacyNBody = toggles.TryGetValue("nbody", out bool nb) && nb;
             }
             else
             {
@@ -2684,10 +3272,25 @@ public sealed class SolarSystemWindow : GameWindow
                 // out of the raw document so the DTO doesn't have to carry them.
                 using var doc = JsonDocument.Parse(json);
                 toggles = _registry.MigrateLegacy(doc.RootElement);
+                legacyNBody = doc.RootElement.TryGetProperty("NBodyEnabled", out var nbProp)
+                              && nbProp.ValueKind == JsonValueKind.True;
                 Debug.WriteLine($"[state] migrated {toggles.Count} legacy toggle(s)");
             }
 
-            // Toggles first: real-scale is registered first, so VisualRadii and
+            // Physics sandbox constants (clamped on load) and the mode selector go
+            // first: the clock must be set before the mode seeds the world at the
+            // saved date, and the mode must be active before the toggles are applied
+            // (physics-only switches such as physics.hud are refused while the mode
+            // is Ephemeris). A pre-sandbox "nbody = true" save becomes Physics mode.
+            if (s.Physics != null) _physConst.LoadDto(s.Physics);
+            var choices = s.Choices ?? new Dictionary<string, int>(StringComparer.Ordinal);
+            if (!choices.ContainsKey("simmode") && legacyNBody)
+                choices["simmode"] = (int)SimulationMode.Physics;
+            _simDays = s.SimDays;
+            _physicsTarget = null;
+            _registry.RestoreChoices(choices);
+
+            // Then the toggles: real-scale is registered first, so VisualRadii and
             // camera limits are already correct when we clamp Distance below.
             _registry.Restore(toggles);
 
@@ -2697,7 +3300,6 @@ public sealed class SolarSystemWindow : GameWindow
             _camera.Target = new Vector3(s.TargetX, s.TargetY, s.TargetZ);
 
             _daysPerSecond = s.DaysPerSecond;
-            _simDays = s.SimDays;
             _focusIndex = s.FocusIndex;
             _helpMode = Math.Clamp(s.HelpMode, 0, 2);
             _settings.ActiveTab = Enum.IsDefined(s.SettingsTab) ? s.SettingsTab : FeatureCategory.Bodies;
@@ -2730,6 +3332,8 @@ public sealed class SolarSystemWindow : GameWindow
                 Language = Localization.CurrentLanguage,
                 SettingsTab = _settings.ActiveTab,
                 Features = _registry.Snapshot(),
+                Choices = _registry.SnapshotChoices(),
+                Physics = _physConst.ToDto(),
             };
             string? dir = Path.GetDirectoryName(StateFilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

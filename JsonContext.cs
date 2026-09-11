@@ -27,6 +27,9 @@ namespace SolarSystem;
 [JsonSerializable(typeof(Constellations.ConstellationsFile))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(Dictionary<string, bool>))]
+[JsonSerializable(typeof(Dictionary<string, int>))]
+[JsonSerializable(typeof(Dictionary<string, double>))]
+[JsonSerializable(typeof(PhysicsConstants.Dto))]
 [JsonSerializable(typeof(Planet.PlanetsFile))]
 [JsonSerializable(typeof(SolarSystemWindow.PersistedState))]
 internal partial class SolarSystemJsonContext : System.Text.Json.Serialization.JsonSerializerContext

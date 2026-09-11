@@ -53,7 +53,7 @@ internal static class Program
         Console.WriteLine("  SolarSystem --render --from YYYY-MM-DD --to YYYY-MM-DD");
         Console.WriteLine("              [--dt <days/frame>] [--frames N] [--fps N]");
         Console.WriteLine("              [--out <dir>] [--ffmpeg <path>] [--video-out <file>]");
-        Console.WriteLine("              [--real-scale]");
+        Console.WriteLine("              [--real-scale] [--physics]");
     }
 
     /// <summary>

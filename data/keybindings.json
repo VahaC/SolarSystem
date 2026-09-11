@@ -12,9 +12,12 @@
 //   waypoint.1..9 Ctrl+1..9 · waypoint.clear.1..9 Ctrl+Shift+1..9 · path.play Shift+P · path.clear Ctrl+Shift+P
 //
 // Everything else (axes, dwarfs, probes, lagrange, constellations, tidal, alignment, meteors,
-// lighttime, nbody, solarwind, solarflares, corona, aurora, atmosphere, eclipses, pbr, oceanmask,
-// bloom, autoexposure, fxaa, lensflare, toolbar, timeline, audio, hotreload, gpubelt, quit)
-// has no default key: use the F1 panel or Ctrl+K, or bind it here.
+// lighttime, simmode, physics.g, physics.sunmass, physics.exponent, physics.lightspeed, physics.hud,
+// physics.collisions, physics.resetconst, physics.reinit, physics.resetmasses, mass.<body>, solarwind, solarflares,
+// corona, aurora, atmosphere, eclipses, pbr, oceanmask, bloom, autoexposure, fxaa, lensflare,
+// toolbar, timeline, audio, hotreload, gpubelt, quit) has no default key: use the F1 panel or
+// Ctrl+K, or bind it here. A key on "simmode" cycles Ephemeris -> Physics -> Compare; a key on a
+// slider (physics.g, mass.earth, ...) resets it to its default.
 //
 // To restore the pre-2026 single-letter layout, uncomment the block below.
 {
@@ -41,7 +44,7 @@
   // "audio": "S",
   // "tidal": "F4",
   // "alignment": "F5",
-  // "nbody": "F6",
+  // "simmode": "F6",
   // "hotreload": "F7",
   // "gpubelt": "F8",
 }

@@ -71,9 +71,46 @@ public static class Localization
         ["ui.alignment.on"]    = "Alignment indicator: ON",
         ["ui.alignment.off"]   = "Alignment indicator: OFF",
         ["ui.alignment.banner"]= "Alignment ({0}): {1}",
-        ["ui.nbody.on"]        = "N-body mode: ON (mutual gravity)",
-        ["ui.nbody.off"]       = "N-body mode: OFF (analytic Kepler)",
-        ["ui.nbody.banner"]    = "N-body mode (S15)",
+        // Physics sandbox: mode selector, constants, diagnostics.
+        ["ui.settings.simmode"]           = "Simulation mode",
+        ["ui.simmode.ephemeris"]          = "Ephemeris",
+        ["ui.simmode.physics"]            = "Physics",
+        ["ui.simmode.compare"]            = "Compare",
+        ["ui.simmode.banner"]             = "Simulation: {0}",
+        ["ui.settings.physics.g"]         = "Gravity G",
+        ["ui.settings.physics.sunmass"]   = "Sun mass",
+        ["ui.settings.physics.exponent"]  = "Gravity exponent n",
+        ["ui.settings.physics.lightspeed"]= "Speed of light",
+        ["ui.settings.physics.hud"]       = "Physics diagnostics",
+        ["ui.settings.physics.collisions"]= "Collisions (merge on contact)",
+        ["ui.physics.collisions.on"]      = "Collisions: ON — touching bodies merge",
+        ["ui.physics.collisions.off"]     = "Collisions: OFF — bodies pass through each other",
+        ["ui.physics.collision.banner"]   = "Collision: {0} merged into {1}",
+        ["ui.unavailable.absorbed"]       = "absorbed in a collision",
+        ["ui.settings.mass"]              = "Mass: {0}",
+        ["ui.cmd.physics.resetconst"]     = "Reset constants",
+        ["ui.cmd.physics.reinit"]         = "Restart from ephemeris",
+        ["ui.cmd.physics.resetmasses"]    = "Reset masses",
+        ["ui.tab.masses"]                 = "Masses",
+        ["ui.unavailable.ephemeris"]      = "switch to Physics or Compare",
+        ["ui.slider.reset"]               = "{0}: reset to {1}",
+        ["ui.physics.banner.physics"]     = "Physics mode — N-body sandbox",
+        ["ui.physics.banner.compare"]     = "Compare mode — physics vs ephemeris",
+        ["ui.physics.progress"]           = "Integrating {0} → {1}  {2:0}%",
+        ["ui.physics.reinit.done"]        = "Physics restarted from the ephemeris at {0}",
+        ["ui.physics.const.reset"]        = "Constants reset to real values",
+        ["ui.physics.masses.reset"]       = "Masses reset to real values",
+        ["ui.physics.hud.step"]           = "step   {0:0.000} d (global)",
+        ["ui.physics.hud.steps"]          = "steps  {0} global · {1} satellite · {2} belt",
+        // ASCII on purpose: the bitmap font atlas has no glyphs for Δ / ₀ / ☉.
+        ["ui.physics.hud.energy"]         = "dE/E0  {0}    d|L|/|L0|  {1}",
+        ["ui.physics.hud.constants"]      = "G x{0:0.###}   Msun x{1:0.###}   n {2:0.00}   c x{3:0.###}",
+        ["ui.physics.hud.elements.au"]    = "{0} (primary {1}):  a {2:0.0000} AU   e {3:0.0000}   P {4:0.0} d",
+        ["ui.physics.hud.elements.km"]    = "{0} (primary {1}):  a {2:0} km   e {3:0.0000}   P {4:0.000} d",
+        ["ui.physics.hud.unbound"]        = "{0}: unbound from {1} (hyperbolic)",
+        ["ui.physics.hud.collisions"]     = "collisions  {0}  ({1})",
+        ["ui.physics.hud.collision"]      = "  {0}  {1} -> {2}   {3:0.0} km/s   {4} J",
+        ["ui.physics.hud.absorbed"]       = "{0}: absorbed by {1} on {2}",
         ["ui.lensflare.on"]    = "Lens flare: ON",
         ["ui.lensflare.off"]   = "Lens flare: OFF",
         // A6: GLSL hot-reload (F7).
@@ -109,7 +146,6 @@ public static class Localization
         ["ui.settings.timeline"]      = "Timeline",
         ["ui.settings.tidal"]         = "Tidal-lock arrows",
         ["ui.settings.alignment"]     = "Alignment indicator",
-        ["ui.settings.nbody"]         = "N-body gravity",
         ["ui.settings.lensflare"]     = "Lens flare",
         ["ui.settings.speed"]         = "Speed (d/s)",
         // A8: GPU compute path for the asteroid belt (toggle with F8).
@@ -235,7 +271,17 @@ public static class Localization
         ["ui.desc.realscale"]         = "True km-derived radii and distances with logarithmic depth; planets become tiny dots.",
         ["ui.desc.pause"]             = "Freeze simulation time (particles and camera keep working).",
         ["ui.desc.lighttime"]         = "Delay each planet's lit longitude by r/c so the terminator matches the photons' departure time.",
-        ["ui.desc.nbody"]             = "Integrate the eight majors with mutual gravity (leapfrog) instead of analytic Kepler.",
+        ["ui.desc.simmode"]           = "Ephemeris = analytic orbits (exact eclipses); Physics = one N-body integration for everything; Compare = physics plus translucent ephemeris ghosts.",
+        ["ui.desc.physics.g"]         = "Multiply the gravitational constant. Bodies keep their current velocity, so a stronger pull bends orbits into tighter ellipses.",
+        ["ui.desc.physics.sunmass"]   = "Multiply the Sun's mass (a circular orbit around a 2× Sun has a period √2 shorter).",
+        ["ui.desc.physics.exponent"]  = "Exponent n in a = GM/rⁿ; 2 is inverse-square. Anything else makes perihelia precess.",
+        ["ui.desc.physics.lightspeed"]= "Multiply the speed of light used by the light-time delay.",
+        ["ui.desc.physics.hud"]       = "Card with energy drift since start, integrator steps per frame, collisions and the selected body's osculating elements.",
+        ["ui.desc.physics.collisions"]= "Bodies whose surfaces touch merge: the heavier one survives at the centre of mass with the summed momentum, mass and volume; the lighter one disappears and hands its moons over. Off: bodies pass through each other.",
+        ["ui.desc.physics.resetconst"]= "Put G, the Sun's mass, the exponent, the speed of light and every body mass back to real values.",
+        ["ui.desc.physics.reinit"]    = "Re-seed every body from the ephemeris at the current date (also resets the energy reference).",
+        ["ui.desc.physics.resetmasses"]= "Put the Sun's and every body's mass multiplier back to 1.",
+        ["ui.desc.mass"]              = "Mass multiplier for this body (logarithmic, 0.01×…100×). Applies immediately without re-seeding.",
         ["ui.desc.meteors"]           = "Meteor streaks near Earth for ±3 days around each annual shower peak.",
         ["ui.desc.orbits"]            = "Orbit lines for planets, dwarfs and comets.",
         ["ui.desc.labels"]            = "Name labels above every body.",
@@ -285,6 +331,9 @@ public static class Localization
     };
 
     private static Dictionary<string, string> _active = _en;
+    /// <summary>Every key of the embedded English table (tests check that each
+    /// shipped translation file covers all of them).</summary>
+    internal static IReadOnlyCollection<string> EnglishKeys => _en.Keys;
     public static string CurrentLanguage { get; private set; } = "en";
     public static IReadOnlyList<string> Available { get; private set; } = new[] { "en" };
 

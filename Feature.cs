@@ -18,6 +18,10 @@ public enum FeatureCategory
     Interface,
     /// <summary>Profiler, hot-reload, GPU paths, recording.</summary>
     Developer,
+    /// <summary>Physics sandbox: per-body mass multipliers. Appended after
+    /// <see cref="Developer"/> so persisted tab indices from older saves stay valid;
+    /// the panel orders it right after <see cref="Simulation"/>.</summary>
+    Masses,
 }
 
 /// <summary>A single keyboard binding (key + exact modifier set).</summary>
@@ -278,6 +282,80 @@ public sealed class Feature : Entry
     }
 }
 
+/// <summary>A multi-option selector (e.g. the simulation mode). Persisted as the
+/// option index; the palette / a bound key cycle it, the panel shows
+/// <c>◂ value ▸</c> arrows.</summary>
+public sealed class Choice : Entry
+{
+    public required Func<int> Get { get; init; }
+    public required Action<int> Set { get; init; }
+    /// <summary>Localisation keys of the options, in index order.</summary>
+    public required IReadOnlyList<string> OptionKeys { get; init; }
+    public int Default { get; init; }
+    /// <summary>Write to state.json (<c>Choices: {id: index}</c>).</summary>
+    public bool Persist { get; init; } = true;
+    /// <summary>Optional banner text after a change. Receives the new index.</summary>
+    public Func<int, string?>? Banner { get; init; }
+
+    public int Count => OptionKeys.Count;
+    public int Value => Math.Clamp(Get(), 0, Math.Max(0, Count - 1));
+    public string OptionLabel(int index) => Localization.T(OptionKeys[Math.Clamp(index, 0, Count - 1)]);
+    public string ValueLabel => OptionLabel(Value);
+
+    /// <summary>Select an option (clamped). Skips the side-effects when it is already
+    /// current. Returns false when the entry is unavailable.</summary>
+    public bool Apply(int index)
+    {
+        if (!IsAvailable) return false;
+        index = Math.Clamp(index, 0, Math.Max(0, Count - 1));
+        if (Get() == index) return true;
+        Set(index);
+        return true;
+    }
+
+    /// <summary>Move by <paramref name="delta"/> options, wrapping around.</summary>
+    public bool Cycle(int delta = 1)
+    {
+        if (!IsAvailable || Count == 0) return false;
+        int next = ((Value + delta) % Count + Count) % Count;
+        Set(next);
+        return true;
+    }
+}
+
+/// <summary>A numeric setting: rendered as a slider row in the panel, listed in
+/// the palette with its live value (Enter resets it to <see cref="Default"/>).
+/// The registry does not persist sliders — whoever owns the value does (the
+/// physics constants live in their own <c>state.json</c> section).</summary>
+public sealed class Slider : Entry
+{
+    public required Func<double> Get { get; init; }
+    public required Action<double> Set { get; init; }
+    public double Min { get; init; }
+    public double Max { get; init; } = 1.0;
+    /// <summary>Nudge amount for the −/+ buttons: additive, or a multiplicative
+    /// factor when <see cref="LogScale"/> is set.</summary>
+    public double Step { get; init; } = 0.01;
+    /// <summary>Map the track logarithmically between <see cref="Min"/> and <see cref="Max"/>
+    /// (both must be &gt; 0). Right for multipliers spanning 0.01×…100×.</summary>
+    public bool LogScale { get; init; }
+    public double Default { get; init; }
+    /// <summary>Composite format string for the value read-out.</summary>
+    public string Format { get; init; } = "{0:0.##}";
+
+    public double Value => Get();
+    public string ValueText => string.Format(System.Globalization.CultureInfo.InvariantCulture, Format, Value);
+
+    public void Apply(double value)
+    {
+        if (!IsAvailable) return;
+        if (double.IsNaN(value)) return;
+        Set(Math.Clamp(value, Min, Max));
+    }
+
+    public void ResetToDefault() => Apply(Default);
+}
+
 /// <summary>A non-boolean action: screenshot, focus a body, cycle language, …</summary>
 public sealed class Command : Entry
 {
@@ -300,6 +378,8 @@ public sealed class FeaturePreset
     public required string Id { get; init; }
     public required string LabelKey { get; init; }
     public Dictionary<string, bool> Overrides { get; init; } = new();
+    /// <summary>Option indices for <see cref="Choice"/> entries (e.g. the simulation mode).</summary>
+    public Dictionary<string, int> Choices { get; init; } = new();
     /// <summary>Dynamic label override (e.g. "Focus: Earth"); wins over <see cref="LabelKey"/>.</summary>
     public Func<string>? LabelFn { get; init; }
 

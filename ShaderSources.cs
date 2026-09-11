@@ -39,8 +39,24 @@ public static class ShaderSources
                 throw new FileNotFoundException(
                     $"Shader source not found: {path}. Make sure Resources/Shaders/{n}.glsl ships with the build.",
                     path);
-            return File.ReadAllText(path);
+            return SanitizeAscii(File.ReadAllText(path));
         });
+    }
+
+    /// <summary>GLSL is ASCII by spec; the only place a non-ASCII character can legally
+    /// appear is a comment. OpenTK marshals the source as UTF-8 but reports its length
+    /// in UTF-16 chars, so every multi-byte character silently truncates the tail of
+    /// the file by (bytes − chars) — enough em-dashes in comments and the closing
+    /// brace disappears ("unexpected $end at token EOF"). Replacing them with '?'
+    /// keeps chars == bytes and makes the upload exact.</summary>
+    internal static string SanitizeAscii(string source)
+    {
+        bool clean = true;
+        foreach (char c in source) if (c > 0x7F) { clean = false; break; }
+        if (clean) return source;
+        var sb = new System.Text.StringBuilder(source.Length);
+        foreach (char c in source) sb.Append(c > 0x7F ? '?' : c);
+        return sb.ToString();
     }
 
     /// <summary>Build a <see cref="ShaderProgram"/> from two named .glsl files.</summary>

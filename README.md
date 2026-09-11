@@ -21,7 +21,7 @@ A real-time, physically-flavoured 3D simulation of our Solar System, written in 
 - **Comet catalogue** — a data-driven set of real comets (Halley, Hale–Bopp, NEOWISE, Encke) loaded from `data/comets.json`, each with its own orbit polyline and CPU-particle ion/dust tail that ignites near perihelion (intensity ∝ 1/r).
 - **Tidal-lock arrows** — additive arrow on every spin-locked moon (Earth's Moon, Galileans, Titan) pointing at its host, visualising permanent near-side orientation.
 - **Planetary alignment indicator** — union-find over heliocentric longitudes flags every group of ≥3 majors within ~12°; a glowing line links them and a top-right banner names the participants.
-- **N-body perturbation mode** — optional kick-drift-kick leapfrog integrator with mutual gravity between the eight majors (Sun fixed at origin), so e.g. Jupiter’s pull on Mars is visible over decadal time-scales. Resyncs from analytic Kepler on date jumps.
+- **Physics sandbox** — three simulation modes: *Ephemeris* (the analytic default), *Physics* (one N-body integration for the Sun, planets, dwarfs, Moon, Galileans and Titan, with comets and the asteroid belt as test particles) and *Compare* (physics plus translucent ephemeris ghosts). G, the Sun's mass, the gravity-law exponent, the speed of light and every body's mass are live sliders, and bodies that touch merge — see [Physics sandbox](#physics-sandbox-s17).
 - **Axial rotation & tilt**, including retrograde spin for Venus/Uranus.
 - **Data-driven** — planet & dwarf elements live in `data/planets.json` (with comments + trailing commas); the built-in tables are a fallback.
 
@@ -116,7 +116,8 @@ the file ships with the old single-letter layout commented out for anyone who wa
 
 Unbound by default (F1 panel · Ctrl+K · `keybindings.json`): axes, dwarf planets, probes, Lagrange
 points, constellations, tidal-lock arrows, alignment indicator, meteor showers, light-time delay,
-N-body gravity, solar wind, solar flares, sun corona, aurora, atmosphere, eclipses, PBR, ocean specular,
+simulation mode (Ephemeris / Physics / Compare), physics constants and masses, physics diagnostics,
+solar wind, solar flares, sun corona, aurora, atmosphere, eclipses, PBR, ocean specular,
 bloom, auto-exposure, FXAA, lens flare, timeline scrubber, audio cues, GLSL hot-reload, GPU asteroid belt.
 
 ---
@@ -159,7 +160,8 @@ dotnet run -c Release -- --render --from 2025-01-01 --to 2026-01-01 `
 
 Flags: `--from / --to <YYYY-MM-DD>`, `--dt <days/frame>`, `--frames N`
 (overrides `--to`), `--fps N`, `--out <dir>`, `--ffmpeg <path>`,
-`--video-out <file.mp4>`, `--real-scale`. Sim time is pinned per frame so the
+`--video-out <file.mp4>`, `--real-scale`, `--physics` (seed the N-body world at
+`--from` and integrate exactly `--dt` days per frame). Sim time is pinned per frame so the
 output is identical regardless of how fast the offscreen loop runs; persisted
 UI state is loaded for camera / toggles but not overwritten.
 
@@ -196,6 +198,79 @@ automatically fall back to CPU-only numbers. The toggle is persisted in
 `state.json`. Full reference in
 [docs/FEATURES.md#a12--per-frame-profiler-overlay](docs/FEATURES.md#a12--per-frame-profiler-overlay)
 ([UA](docs/FEATURES.uk.md#a12--per-frame-profiler-overlay)).
+
+### Physics sandbox (S17)
+
+Everything can move by one set of equations instead of analytic formulas, and you
+can bend the constants while it runs. **F1 → Simulation → *Simulation mode***
+(or `Ctrl+K` → "simulation mode") switches between:
+
+- **Ephemeris** — the historical default: Kepler elements for planets, dwarfs
+  and comets, ELP-2000 for the Moon, Meeus for the Galileans. Positions are
+  bit-for-bit what they were before the sandbox existed, so the eclipse
+  bookmarks still land to the minute. The constants panel is greyed out.
+- **Physics** — a single N-body integration for every massive body: the Sun
+  (free, barycentric frame), the 8 planets, 5 dwarfs, the Moon, Io / Europa /
+  Ganymede / Callisto and Titan. Comets and the 8000-rock belt feel the same
+  field as massless test particles (the belt in the compute kernel, with a CPU
+  fallback). Switching seeds every body from the ephemeris at the current date.
+- **Compare** — physics drives the bodies while each body's ephemeris position
+  is drawn as a translucent ghost (alpha 0.3, no shadows) with a dashed link to
+  the real body, so the divergence is visible as it grows.
+
+**Constants** (live; changing one never re-seeds — bodies keep their current
+position and velocity): gravity multiplier `G`, Sun mass, gravity-law exponent
+`n` in `a = GM / rⁿ` (1.5 … 3.0, 2 = inverse square), speed of light (used by
+the light-time delay), plus a **Masses** tab with a logarithmic 0.01× … 100×
+slider per body. *Reset constants*, *Reset masses* and *Restart from ephemeris*
+buttons sit next to them. The *Physics diagnostics* card shows the relative
+energy drift since the seed, the steps taken this frame (global · satellite ·
+belt) and the osculating `a`, `e`, `P` of the selected body.
+
+**Collisions.** Every pair of bodies is swept along each step (satellites per
+sub-step, in their host's frame), so when two surfaces touch — even in a fast
+plunge that would otherwise tunnel through — they merge, perfectly
+inelastically: the heavier body survives at the pair's centre of mass with the
+summed momentum, mass and volume (`R³ = R₁³ + R₂³`), the lighter one disappears
+and hands any moons it had to the survivor (a moon that swallows its own planet
+takes over its place at heliocentric level). Comets that hit a massive body
+simply vanish; belt rocks are not checked. Each event shows a banner, a bloom
+flash on the survivor and a line in the diagnostics card (date, impact speed,
+impact energy `½μv²` in joules); the absorbed body's *Masses* slider greys out
+and the energy-drift reference is rebased so the card keeps reporting integrator
+error. The *Collisions* switch (Simulation tab, `physics.collisions`, on by
+default) turns the sweep off — bodies then pass through each other, softened at
+1e-5 AU — and *Restart from ephemeris* revives everything. Try it: Physics
+mode, Sun mass ×100 — Mercury and Venus plunge into the Sun within a few days
+(their perihelia drop to `r / 199`).
+
+**Integrator.** Kick-drift-kick leapfrog composed into a 4th-order Yoshida
+scheme (symplectic, time-reversible) with a hierarchical step: one global step
+(≤ 0.5 d, adaptive to ≥ 500 steps per orbit of the fastest body — about 0.2 d
+with Mercury) moves the heliocentric bodies, then each planet + moons subsystem
+is sub-stepped in the planetocentric frame (Moon ≤ 0.05 d, Galileans ≤ 0.01 d)
+in the tidal field of the Sun and the other planets. Measured: relative energy
+drift ≈ 2·10⁻⁹ over a century for the planets, the Moon within 0.2° of ELP-2000
+after ten years, Mercury's numerical perihelion drift ≈ 5″/century (the real
+planetary value is ≈ 530″).
+
+**Time jumps** (date seek, scrubber, bookmarks) in Physics / Compare integrate
+from the current time to the target — backwards too — in per-frame chunks with
+an 8 ms CPU budget and a progress bar, so the UI never freezes; a century takes
+roughly 20–30 s. This is slower and only approximately reproducible compared
+with the instant analytic jump of Ephemeris mode.
+
+**Accuracy vs. reality.** The seed is the mean-element ephemeris, not the true
+osculating state, so even with real constants the planets drift from the
+Standish orbits by ~0.1–0.7° per decade (Saturn worst: its short-period
+Jupiter terms are not in the mean elements). That drift is exactly what Compare
+mode shows. With altered constants there is, of course, no "reality" to match.
+
+Headless renders accept `--physics`; `state.json` gains `Choices: {simmode}`
+and a `Physics` section with the constants. Saves from before the sandbox with
+`nbody: true` load as Physics mode. Full reference in
+[docs/FEATURES.md#s15--physics-sandbox](docs/FEATURES.md#s15--physics-sandbox-ephemeris--physics--compare)
+([UA](docs/FEATURES.uk.md#s15--фізична-пісочниця-ефемериди--фізика--порівняння)).
 
 ### Textures
 
@@ -248,7 +323,7 @@ CometCatalog.cs           data/comets.json loader (Halley, Hale–Bopp, NEOWISE,
 Comets.cs                  plural manager wrapping the loaded `Comet[]`
 TidalLock.cs               S13: tidal-lock arrows on locked moons
 PlanetaryAlignment.cs      S14: heliocentric-alignment line + banner indicator
-NBodyIntegrator.cs         S15: leapfrog mutual-gravity integrator (AU, days, M⊙)
+PhysicsWorld.cs            S17: hierarchical Yoshida/leapfrog N-body world + tunable constants (AU, days, M⊙), swept collisions + inelastic merges
 Constellations.cs         skybox-anchored RA/Dec line overlay
 SolarWind.cs              instanced-quad particle pool radiating from the Sun
 SolarFlares.cs            instanced-quad eruption sprites that feed bloom
