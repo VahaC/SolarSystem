@@ -9,7 +9,7 @@ using OpenTK.Windowing.GraphicsLibraryFramework;
 
 namespace SolarSystem;
 
-public sealed class SolarSystemWindow : GameWindow
+public sealed partial class SolarSystemWindow : GameWindow
 {
     /// <summary>A7: when set before <see cref="GameWindow.Run"/>, switches the
     /// app into a deterministic offline renderer that overrides simulation
@@ -248,6 +248,7 @@ public sealed class SolarSystemWindow : GameWindow
         _tidalLock.Initialize();
         _alignment.Initialize();
         _profiler.Initialize();
+        InitializeFlight();
         // Q13: discover available languages and apply current OS culture if a
         // matching translation file ships next to the binary.
         Localization.DiscoverAvailable();
@@ -407,6 +408,9 @@ public sealed class SolarSystemWindow : GameWindow
             try { Directory.CreateDirectory(Headless.OutDir); } catch { /* surfaces below on save */ }
             Console.WriteLine($"[render] {Headless.TotalFrames} frames @ dt={Headless.DaysPerFrame} d/frame -> {Headless.OutDir}");
         }
+
+        // Hidden scripted flight demo (development tool): go straight into flight mode.
+        BeginFlightDemo();
     }
 
     protected override void OnResize(ResizeEventArgs e)
@@ -421,6 +425,7 @@ public sealed class SolarSystemWindow : GameWindow
         _comets.SetViewport(vp);
         _belt.SetViewport(vp);
         _meteors.SetViewport(vp);
+        ResizeFlight(vp);
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)
@@ -471,7 +476,7 @@ public sealed class SolarSystemWindow : GameWindow
             }
         }
         else if (!_paused && _physicsTarget == null)
-            _simDays += _daysPerSecond * args.Time;
+            _simDays += _daysPerSecond * SimFrameSeconds(args.Time);
 
         // Physics sandbox: integrate the world up to the requested time (or toward a
         // pending seek target, in per-frame chunks) and let the physics clock define
@@ -610,7 +615,9 @@ public sealed class SolarSystemWindow : GameWindow
         // Smooth focus transition: lerp Target + Distance with a smoothstep ease.
         // Tracking a moving planet during the lerp uses the body's CURRENT position as
         // the dynamic end target so the camera arrives smoothly even as it orbits.
-        if (_focusTransitioning)
+        // Flight mode: the ship and its chase camera replace the orbit camera entirely.
+        if (_flightActive) UpdateFlight(args.Time);
+        else if (_focusTransitioning)
         {
             _focusTransitionElapsed += args.Time;
             float t = (float)Math.Clamp(_focusTransitionElapsed / FocusTransitionSeconds, 0.0, 1.0);
@@ -791,6 +798,7 @@ public sealed class SolarSystemWindow : GameWindow
         // twice within 2 s to quit, so a stray press can no longer kill the session.
         if (e.Key == Keys.Escape && (e.Modifiers & Chord) == 0)
         {
+            if (_flightActive) { ToggleFlight(); return; }
             if (_settings.Visible) { _settings.Visible = false; return; }
             if (_bookSidebar.Visible) { _bookSidebar.Visible = false; return; }
             double now = GLFW.GetTime();
@@ -806,6 +814,9 @@ public sealed class SolarSystemWindow : GameWindow
             _settings.CycleTab(e.Key == Keys.Right ? 1 : -1);
             return;
         }
+
+        // Flight mode: Enter starts / restarts the gate race.
+        if (HandleFlightKey(e)) return;
 
         _registry.Dispatch(e.Key, e.Modifiers, ShowBanner);
     }
@@ -855,6 +866,10 @@ public sealed class SolarSystemWindow : GameWindow
         for (int ci = 0; ci < _comets.All.Length; ci++)
             if (WorldAlive(_worldCometIdx[ci])) _renderer.DrawPlanet(_camera, _comets.All[ci].Body, Vector3.Zero);
 
+        // Flight mode: rocks and the ship are opaque, so they go before the translucent
+        // cloud layer and Saturn's ring.
+        DrawFlightOpaque();
+
         // V3: cloud layer for any planet that has one (currently just Earth).
         // Drawn after the opaque planet pass so alpha-blending composites over
         // the surface — including the V4 night-side city-lights baked into PlanetFS.
@@ -862,7 +877,15 @@ public sealed class SolarSystemWindow : GameWindow
             _renderer.DrawClouds(_camera, p, Vector3.Zero);
 
         var saturn = _planets[5];
-        if (WorldAlive(_worldPlanetIdx[5])) _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
+        if (WorldAlive(_worldPlanetIdx[5]))
+        {
+            // Flight mode: gates, engine plumes and trails are drawn later (additively) and
+            // pass through the ring plane; if the translucent ring wrote depth it would
+            // cut them off along a hard line.
+            if (_flightActive) GL.DepthMask(false);
+            _renderer.DrawSaturnRing(_camera, saturn, Vector3.Zero);
+            if (_flightActive) GL.DepthMask(true);
+        }
 
         // Physics sandbox, Compare mode: translucent ghost of every integrated body at
         // its ephemeris position plus a dashed link, so the divergence is legible.
@@ -881,6 +904,8 @@ public sealed class SolarSystemWindow : GameWindow
         if (_showProbes) _probes.Draw(_camera);
         if (_showLagrange) { _lagrange.Enabled = true; _lagrange.Draw(_camera); }
         if (_showMeteors) _meteors.Draw(_camera);
+        // Flight mode: engine plumes, trails and speed streaks (additive, feeds bloom).
+        DrawFlightFx();
         _profiler.EndPass();
         if (_showAxes) _renderer.DrawPlanetAxes(_camera, visible);
 
@@ -924,6 +949,14 @@ public sealed class SolarSystemWindow : GameWindow
         _profiler.EndPass();
 
         _profiler.BeginPass("ui");
+
+        // PROTOTYPE (2026-11-17): flight mode shows only its own small HUD — none of the
+        // sandbox labels, panels, toolbar or cheat sheet.
+        if (_flightActive)
+        {
+            DrawFlightHud();
+            goto UiChromeDone;
+        }
 
         // Labels
         if (_showLabels)
@@ -1316,16 +1349,18 @@ public sealed class SolarSystemWindow : GameWindow
                 new Vector4(1f, 0.25f, 0.25f, 0.95f));
         }
 
+    UiChromeDone:
         // Ctrl+K palette: modal, so it sits above every other panel.
         _palette.Draw(_renderer, _font, _mousePos);
 
         // A12: profiler overlay (per-pass GPU + CPU times). Drawn last so it sits
         // on top of everything else; toggled with F10.
         _profiler.EndPass();
-        if (_showProfiler) DrawProfilerOverlay();
+        if (_showProfiler && !_flightActive) DrawProfilerOverlay();
 
         SwapBuffers();
         _profiler.EndFrame();
+        FlightDemoAfterFrame();
 
         // A7 (interactive): dump every rendered frame while F9-recording is on.
         // Done after SwapBuffers (back-buffer still holds the just-shown image)
@@ -1396,6 +1431,8 @@ public sealed class SolarSystemWindow : GameWindow
                 _palette.Close();
             return;
         }
+        // Flight mode draws none of the sandbox panels, so none of them may take clicks.
+        if (_flightActive) { _camera.HandleMouseDown(e, pos); return; }
         // Q12: settings panel takes click priority when open.
         if (e.Button == MouseButton.Left && _settings.TryHandleClick(pos)) return;
         // Bottom toolbar buttons.
@@ -1602,6 +1639,8 @@ public sealed class SolarSystemWindow : GameWindow
 
     private void ToggleRealScale()
     {
+        // Flight mode is built for the artistic scale; it switches scale itself on entry.
+        if (_flightActive) return;
         OrbitalMechanics.RealScale = !OrbitalMechanics.RealScale;
 
         // Replace each body's VisualRadius with the value appropriate for the new mode.
@@ -2198,6 +2237,9 @@ public sealed class SolarSystemWindow : GameWindow
     private void BuildFeatureRegistry()
     {
         var r = _registry;
+
+        // Arcade flight mode (first row of the Simulation tab).
+        RegisterFlightEntries(r);
 
         // ---- Simulation ----------------------------------------------------------------
         r.Add(new Feature
@@ -2874,6 +2916,13 @@ public sealed class SolarSystemWindow : GameWindow
         _toolbar.Add(FeatureButton("labels"));
         _toolbar.Add(FeatureButton("trails"));
         _toolbar.Add(FeatureButton("realscale"));
+        _toolbar.Add(new Toolbar.Button
+        {
+            Label = () => Localization.T("ui.toolbar.flight"),
+            Click = ToggleFlight,
+            Active = () => _flightActive,
+            Tip = () => Localization.T("ui.desc.flight") + "  [F]",
+        });
         _toolbar.Add(FeatureButton("settings", () => Localization.T("ui.toolbar.settings")));
         _toolbar.Add(new Toolbar.Button
         {
@@ -2926,8 +2975,10 @@ public sealed class SolarSystemWindow : GameWindow
     protected override void OnUnload()
     {
         // A7: a headless render run shouldn't clobber the interactive user's
-        // saved camera / toggles.
-        if (Headless == null) TrySavePersistedState();
+        // saved camera / toggles. Flight mode is left first so what gets saved is the
+        // user's own setup; the scripted flight demo never saves at all.
+        ExitFlight();
+        if (Headless == null && FlightDemo == null) TrySavePersistedState();
         _solarWind.Dispose();
         _solarFlares.Dispose();
         _belt.Dispose();
@@ -2939,6 +2990,7 @@ public sealed class SolarSystemWindow : GameWindow
         _aurora.Dispose();
         _tidalLock.Dispose();
         _alignment.Dispose();
+        DisposeFlight();
         _renderer.Dispose();
         _font.Dispose();
         base.OnUnload();

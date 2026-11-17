@@ -5,6 +5,10 @@ namespace SolarSystem.Tests;
 
 /// <summary>Modal lifecycle of the Ctrl+K palette: query editing, cursor
 /// movement, Enter semantics (features keep it open, commands close it).</summary>
+// Localization keeps the active language in static state. Test classes that switch it
+// or read translated text share one xUnit collection so they never run in parallel
+// (otherwise SetLanguage("uk") in one class races SetLanguage("en") in another).
+[Collection("Localization")]
 public class CommandPaletteTests
 {
     private static (FeatureRegistry reg, Dictionary<string, bool> state, List<string> ran) Build()

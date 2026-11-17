@@ -95,6 +95,23 @@ public sealed class Renderer : IDisposable
     /// Keeps real-scale bodies visible at any distance. Set to 0 to disable.</summary>
     public float MinPixelRadius { get; set; } = 1.0f;
 
+    // ---- Flight mode hooks (PROTOTYPE 2026-11-17) --------------------------------------
+    // All default to "off": with these at their defaults every shader must produce exactly
+    // the picture it produced before flight mode existed.
+
+    /// <summary>Saturn's ring seen from close up: 0 = the sandbox look, 1 = flight mode
+    /// (uploaded to the ring shader as <c>uFlight</c>).</summary>
+    public float RingCloseUp { get; set; }
+    /// <summary>Seconds for shader animation in flight mode (<c>uTime</c> of the ring shader).</summary>
+    public float SceneTime { get; set; }
+    /// <summary>Flight post-processing, uploaded to the composite shader as
+    /// <c>uFlightPost</c>: X = strength (0 = off, 1 = flight mode), Y = speed 0..1,
+    /// Z = boost 0..1, W = time in seconds.</summary>
+    public Vector4 FlightPost { get; set; }
+    /// <summary>Where the ship is heading on screen (UV, 0..1, origin bottom-left) — the
+    /// centre of speed effects; <c>uFlightCenter</c> of the composite shader.</summary>
+    public Vector2 FlightPostCenter { get; set; } = new(0.5f, 0.5f);
+
     /// <summary>R3: scales the Milky Way sky colour after sampling. Lowered when the
     /// camera is in deep space so distant stars don't drown out a tiny planet.</summary>
     public float StarsBrightness { get; set; } = 0.7f;
@@ -627,6 +644,10 @@ public sealed class Renderer : IDisposable
         _compositeShader.SetFloat("uBloomStrength", 1.1f);
         _compositeShader.SetFloat("uExposure", Exposure);
         _compositeShader.SetInt("uAutoExposure", AutoExposureEnabled ? 1 : 0);
+        // Flight mode hooks (ignored by a shader that does not declare them).
+        _compositeShader.SetVector4("uFlightPost", FlightPost);
+        _compositeShader.SetVector2("uFlightCenter", FlightPostCenter);
+        _compositeShader.SetVector2("uResolution", new Vector2(_ppWidth, _ppHeight));
         GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
 
         // V11: FXAA from the LDR target into the default framebuffer.
@@ -1061,6 +1082,14 @@ public sealed class Renderer : IDisposable
         _ringShader.SetFloat("uPlanetRadius", saturn.VisualRadius);
         _ringShader.SetVector3("uLightPos", sunPos);
         _ringShader.SetInt("uHasShadow", 1);
+        // Flight mode hooks (ignored by a shader that does not declare them).
+        _ringShader.SetFloat("uFlight", RingCloseUp);
+        _ringShader.SetFloat("uTime", SceneTime);
+        _ringShader.SetVector3("uCamPos", cam.Eye);
+        _ringShader.SetFloat("uInnerRadius", saturn.VisualRadius * 1.35f);
+        _ringShader.SetFloat("uOuterRadius", saturn.VisualRadius * 2.4f);
+        _ringShader.SetVector3("uRingNormal",
+            Vector3.TransformNormal(Vector3.UnitY, Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(saturn.AxisTiltDeg))).Normalized());
         GL.ActiveTexture(TextureUnit.Texture0);
         GL.BindTexture(TextureTarget.Texture2D, _ringTexture);
         _ringShader.SetInt("uTex", 0);

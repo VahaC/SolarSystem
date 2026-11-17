@@ -36,10 +36,25 @@ public sealed class Camera
         Distance = DefaultDistance;
     }
 
+    /// <summary>Flight mode: when set, the camera is no longer an orbit camera — the eye
+    /// and the view matrix come straight from the chase camera (which also keeps
+    /// <see cref="Target"/> and <see cref="Distance"/> meaningful for code that reads them).
+    /// Null = normal orbit behaviour.</summary>
+    public Vector3? EyeOverride;
+    public Matrix4? ViewOverride;
+
+    /// <summary>Back to the orbit camera.</summary>
+    public void ClearOverride()
+    {
+        EyeOverride = null;
+        ViewOverride = null;
+    }
+
     public Vector3 Eye
     {
         get
         {
+            if (EyeOverride is { } eye) return eye;
             float cp = MathF.Cos(Pitch), sp = MathF.Sin(Pitch);
             float cy = MathF.Cos(Yaw), sy = MathF.Sin(Yaw);
             var dir = new Vector3(cp * sy, sp, cp * cy);
@@ -47,7 +62,7 @@ public sealed class Camera
         }
     }
 
-    public Matrix4 ViewMatrix => Matrix4.LookAt(Eye, Target, Vector3.UnitY);
+    public Matrix4 ViewMatrix => ViewOverride ?? Matrix4.LookAt(Eye, Target, Vector3.UnitY);
     public Matrix4 ProjectionMatrix =>
         Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(FovDeg), Aspect, Near, Far);
 

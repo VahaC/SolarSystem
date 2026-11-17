@@ -11,6 +11,10 @@ namespace SolarSystem.Tests;
 /// migration, presets and palette search. No OpenGL context needed — the
 /// registry only holds closures.
 /// </summary>
+// Localization keeps the active language in static state. Test classes that switch it
+// or read translated text share one xUnit collection so they never run in parallel
+// (otherwise SetLanguage("uk") in one class races SetLanguage("en") in another).
+[Collection("Localization")]
 public class FeatureRegistryTests
 {
     private static (FeatureRegistry reg, Dictionary<string, bool> state) Build()

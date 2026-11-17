@@ -11,6 +11,10 @@ namespace SolarSystem.Tests;
 /// (the bug that masked the Ukrainian translation when <c>lang.uk.json</c>
 /// was corrupted).
 /// </summary>
+// Localization keeps the active language in static state. Test classes that switch it
+// or read translated text share one xUnit collection so they never run in parallel
+// (otherwise SetLanguage("uk") in one class races SetLanguage("en") in another).
+[Collection("Localization")]
 public class LocalizationTests
 {
     [Fact]
